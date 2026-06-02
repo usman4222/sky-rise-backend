@@ -83,6 +83,9 @@ const buildFirebaseUserResponse = async (user) => {
         sponsor: user.sponsor,
         kycStatus: user.kycStatus,
         status: user.status,
+        unlockedLevels: user.unlockedLevels || [1],
+        vipRank: user.vipRank || 0,
+        achievementRank: user.achievementRank || 0,
 
         role: roles[0] || 'USER',
         roles: roles.length ? roles : ['USER'],
@@ -291,6 +294,9 @@ export const getFirebaseProfile = async (req, res) => {
                 sponsor: user.sponsor,
                 kycStatus: user.kycStatus,
                 status: user.status,
+                unlockedLevels: user.unlockedLevels || [1],
+                vipRank: user.vipRank || 0,
+                achievementRank: user.achievementRank || 0,
 
                 role: roles[0] || 'USER',
                 roles: roles.length ? roles : ['USER'],
@@ -322,5 +328,46 @@ export const getFirebaseProfile = async (req, res) => {
         console.error('Firebase profile error:', error);
 
         return sendError(res, 'Failed to fetch Firebase user profile', 500, error);
+    }
+};
+
+export const updateFirebasePassword = async (req, res) => {
+    try {
+        const { newPassword } = req.body;
+        const user = req.user;
+
+        if (!newPassword || newPassword.length < 6) {
+            return sendError(res, 'Password must be at least 6 characters long', 400);
+        }
+
+        // 1. Force update the password in Firebase Auth using the Admin SDK
+        await admin.auth().updateUser(user.firebaseUid, {
+            password: newPassword
+        });
+
+        // 2. Fallback: Update local MongoDB LoginAccount if it exists (legacy fallback)
+        const LoginAccount = (await import('../models/auth/login_account.model.js')).default;
+        const bcrypt = (await import('bcryptjs')).default;
+        
+        const localAccount = await LoginAccount.findOne({ user: user._id });
+        if (localAccount) {
+            const salt = await bcrypt.genSalt(10);
+            localAccount.passwordHash = await bcrypt.hash(newPassword, salt);
+            await localAccount.save();
+        }
+
+        // 3. Log the security event
+        await SecurityLog.create({
+            user: user._id,
+            event: 'PASSWORD_UPDATED',
+            description: 'Password was updated successfully via Profile',
+            ipAddress: req.ip || '127.0.0.1',
+            userAgent: req.headers['user-agent'] || 'unknown'
+        });
+
+        return successResponse(res, 'Password updated successfully across all systems');
+    } catch (error) {
+        console.error('Password update error:', error);
+        return sendError(res, 'Failed to update password. Make sure it meets Firebase requirements.', 500, error);
     }
 };

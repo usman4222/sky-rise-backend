@@ -40,21 +40,14 @@ const makeAdmin = async () => {
             }
         );
 
-        await UserRole.findOneAndUpdate(
-            {
-                user: user._id,
-                role: adminRole._id
-            },
-            {
-                user: user._id,
-                role: adminRole._id
-            },
-            {
-                upsert: true,
-                returnDocument: 'after',
-                setDefaultsOnInsert: true
-            }
-        );
+        // Remove any old/undefined role assignments
+        await UserRole.deleteMany({ user: user._id });
+
+        // Assign the ADMIN role freshly
+        await UserRole.create({
+            user: user._id,
+            role: adminRole._id
+        });
 
         console.log(`✅ ADMIN role assigned to ${email}`);
         process.exit(0);

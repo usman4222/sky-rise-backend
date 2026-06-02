@@ -6,14 +6,16 @@ const {
     getPackages,
     purchasePackage,
     getMyInvestments,
-    withdrawCapital
+    withdrawCapital,
+    getRoiHistory
 } = investmentController;
 
-import { firebaseProtect } from '../middleware/firebaseAuth.js';
+import { firebaseProtect, firebaseProtectOptional } from '../middleware/firebaseAuth.js';
 
-router.get('/packages', firebaseProtect, getPackages);
+router.get('/packages', firebaseProtectOptional, getPackages);
 router.post('/purchase', firebaseProtect, purchasePackage);
 router.get('/my-investments', firebaseProtect, getMyInvestments);
 router.post('/withdraw-capital', firebaseProtect, withdrawCapital);
+router.get('/roi-history', firebaseProtect, getRoiHistory);
 
 export default router;

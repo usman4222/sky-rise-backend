@@ -8,8 +8,10 @@ import InvestmentPackage from '../models/investment/investment_package.model.js'
 import UserInvestment from '../models/investment/user_investment.model.js';
 import InvestmentPayment from '../models/investment/investment_payment.model.js';
 import CapitalWithdrawal from '../models/investment/capital_withdrawal.model.js';
+import RoiHistory from '../models/investment/roi_history.model.js';
 import Notification from '../models/system/notification.model.js';
 import ReferralTree from '../models/network/referral_tree.model.js';
+import UserRole from '../models/auth/user_role.model.js';
 
 // Reward triggers
 import rewardEngine from '../utils/rewardEngine.js';
@@ -23,7 +25,12 @@ import { sendError, successResponse } from '../utils/response.js';
 // @access  Private
 const getPackages = async (req, res) => {
   try {
-    const isAdmin = req.user.role === 'admin' || req.user.role === 'super_admin';
+    let isAdmin = false;
+    if (req.user) {
+      const userRoles = await UserRole.find({ user: req.user._id }).populate('role');
+      const roleNames = userRoles.map(ur => ur.role?.name?.toUpperCase() || '');
+      isAdmin = roleNames.includes('ADMIN') || roleNames.includes('SUPER_ADMIN');
+    }
 
     // Non-admins see public packages. Admins can see hidden packages (Package E)
     const query = { isActive: true };
@@ -103,7 +110,10 @@ const purchasePackage = async (req, res) => {
     }
 
     // Hidden/admin package check
-    if (pkg.isHidden && req.user.role !== 'admin' && req.user.role !== 'super_admin') {
+    const userRoles = await UserRole.find({ user: req.user._id }).populate('role');
+    const roleNames = userRoles.map(ur => ur.role?.name?.toUpperCase() || '');
+    const isAdmin = roleNames.includes('ADMIN') || roleNames.includes('SUPER_ADMIN');
+    if (pkg.isHidden && !isAdmin) {
       return sendError(res, 'This package is restricted and cannot be purchased by normal users', 403);
     }
 
@@ -400,9 +410,28 @@ const withdrawCapital = async (req, res) => {
   }
 };
 
+const getRoiHistory = async (req, res) => {
+  try {
+    const roiHistory = await RoiHistory.find({ user: req.user._id })
+      .populate({
+        path: 'userInvestment',
+        populate: { path: 'package' }
+      })
+      .sort({ createdAt: -1 });
+
+    return successResponse(res, 'ROI payout history retrieved successfully', {
+      roiHistory
+    });
+  } catch (error) {
+    console.error('getRoiHistory error:', error);
+    return sendError(res, 'Failed to fetch ROI history records', 500, error);
+  }
+};
+
 export default {
   getPackages,
   purchasePackage,
   getMyInvestments,
-  withdrawCapital
+  withdrawCapital,
+  getRoiHistory
 };

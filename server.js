@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
+import 'dotenv/config';
 import connectDB from './config/db.js';
 
 // Routes
@@ -11,6 +11,9 @@ import financeRoutes from './routes/finance.routes.js';
 import investmentRoutes from './routes/investment.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import webhookRoutes from './routes/webhook.routes.js';
+import paymentRoutes from './routes/payment.routes.js';
+import rewardsRoutes from './routes/rewards.routes.js';
+import supportRoutes from './routes/support.routes.js';
 
 // Group 1: Identity & RBAC
 import User from './models/auth/user.model.js';
@@ -66,7 +69,6 @@ import SupportTicket from './models/system/support_ticket.model.js';
 import Announcement from './models/system/announcement.model.js';
 import WebsitePage from './models/system/website_page.model.js';
 
-dotenv.config();
 
 const app = express();
 
@@ -194,6 +196,13 @@ app.use('/api/finance', financeRoutes);
 app.use('/api/investments', investmentRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/webhooks', webhookRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/rewards', rewardsRoutes);
+app.use('/api/support', supportRoutes);
+
+// Dedicated CoinPayments webhook endpoint (matches CoinPayments dashboard config)
+import webhookController from './controllers/webhook.controller.js';
+app.post('/api/coinpayments/webhook', webhookController.handleCoinPaymentsIPN);
 // API Route List
 app.get('/api/routes', (req, res) => {
   res.status(200).json({

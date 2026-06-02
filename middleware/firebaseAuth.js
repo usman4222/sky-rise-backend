@@ -41,3 +41,36 @@ export const firebaseProtect = async (req, res, next) => {
         return sendError(res, 'Invalid or expired Firebase token', 401);
     }
 };
+
+export const firebaseProtectOptional = async (req, res, next) => {
+    try {
+        let token;
+
+        if (
+            req.headers.authorization &&
+            req.headers.authorization.startsWith('Bearer')
+        ) {
+            token = req.headers.authorization.split(' ')[1];
+        }
+
+        if (!token) {
+            return next();
+        }
+
+        const decodedToken = await admin.auth().verifyIdToken(token);
+
+        const user = await User.findOne({
+            firebaseUid: decodedToken.uid
+        });
+
+        if (user && user.status !== 'suspended') {
+            req.firebaseUser = decodedToken;
+            req.user = user;
+        }
+
+        next();
+    } catch (error) {
+        // Fallback: ignore expired/invalid tokens and treat as guest
+        next();
+    }
+};

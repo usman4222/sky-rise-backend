@@ -5,7 +5,8 @@ dotenv.config();
 
 const testWebhook = async () => {
   const PORT = process.env.PORT || 5000;
-  const IPN_SECRET = process.env.COINPAYMENTS_IPN_SECRET || 'your_ipn_secret';
+  const CP_CLIENT_ID = (process.env.COINPAYMENTS_CLIENT_ID || 'mock_client_id').trim();
+  const CP_CLIENT_SECRET = (process.env.COINPAYMENTS_CLIENT_SECRET || 'mock_client_secret').trim();
   
   const txnId = process.argv[2];
   if (!txnId) {
@@ -14,38 +15,45 @@ const testWebhook = async () => {
     process.exit(1);
   }
 
-  // Construct mock CoinPayments IPN payload parameters
-  const payloadParams = new URLSearchParams({
-    ipn_version: '1.0',
-    ipn_type: 'api',
-    ipn_mode: 'hmac',
-    ipn_id: 'mock_ipn_id_' + Math.random().toString(36).substring(2, 9),
-    merchant: process.env.COINPAYMENTS_MERCHANT_ID || 'mock_cp_merchant_999',
-    status: '100', // 100 = Completed / Success
-    status_text: 'Verified payment of USDT',
-    txn_id: txnId,
-    amount1: '10.0',
-    currency1: 'USDT'
-  });
+  // Construct mock CoinPayments REST JSON webhook payload
+  const payload = {
+    invoiceId: txnId, // Matches the deposit's transactionId (e.g. USDT-XXX)
+    id: 'mock_cp_invoice_id_' + Math.random().toString(36).substring(2, 9),
+    status: 'completed', // 'completed' status matches the REST API completion
+    status_text: 'Paid & Verified',
+    amount: {
+      currencyId: 'USDT.TRC20',
+      displayValue: '10.0'
+    }
+  };
 
-  const payloadString = payloadParams.toString();
+  const bodyString = JSON.stringify(payload);
+  const timestamp = new Date().toISOString().split(".")[0];
+  const method = 'POST';
+  const url = `http://localhost:${PORT}/api/webhooks/coinpayments`;
+  
+  // Calculate signature: \ufeff + method + url + clientId + timestamp + bodyString
+  const message = `\ufeff${method}${url}${CP_CLIENT_ID}${timestamp}${bodyString}`;
+  const signature = crypto
+    .createHmac('sha256', CP_CLIENT_SECRET)
+    .update(message, 'utf8')
+    .digest('base64');
 
-  // Create HMAC signature using SHA512
-  const hmac = crypto.createHmac('sha512', IPN_SECRET);
-  hmac.update(payloadString);
-  const signature = hmac.digest('hex');
-
-  console.log(`Sending webhook for TxID: ${txnId} to http://localhost:${PORT}/api/webhooks/coinpayments`);
-  console.log(`HMAC Signature: ${signature}`);
+  console.log(`Sending webhook for TxID: ${txnId} to ${url}`);
+  console.log(`X-CoinPayments-Client: ${CP_CLIENT_ID}`);
+  console.log(`X-CoinPayments-Timestamp: ${timestamp}`);
+  console.log(`X-CoinPayments-Signature: ${signature}`);
 
   try {
-    const res = await fetch(`http://localhost:${PORT}/api/webhooks/coinpayments`, {
-      method: 'POST',
+    const res = await fetch(url, {
+      method,
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'HMAC': signature
+        'Content-Type': 'application/json',
+        'X-CoinPayments-Client': CP_CLIENT_ID,
+        'X-CoinPayments-Timestamp': timestamp,
+        'X-CoinPayments-Signature': signature
       },
-      body: payloadString
+      body: bodyString
     });
 
     const responseText = await res.text();

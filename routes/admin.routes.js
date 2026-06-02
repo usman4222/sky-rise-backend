@@ -1,5 +1,6 @@
 import express from 'express';
 import adminController from '../controllers/admin.controller.js';
+import adminPaymentController from '../controllers/adminPayment.controller.js';
 
 import { firebaseProtect } from '../middleware/firebaseAuth.js';
 import { restrictTo } from '../middleware/rbac.js';
@@ -35,13 +36,13 @@ const adminMiddleware = [
 router.get('/dashboard', adminMiddleware, getAdminDashboard);
 
 // ===============================
-// Deposit Management
+// Deposit Management (Legacy manual)
 // ===============================
 router.get('/deposits', adminMiddleware, adminController.getAdminDeposits);
 router.post('/deposits/:id/action', adminMiddleware, processDeposit);
 
 // ===============================
-// Withdrawal Management
+// Withdrawal Management (Legacy)
 // ===============================
 router.get('/withdrawals', adminMiddleware, adminController.getAdminWithdrawals);
 router.post('/withdrawals/:id/action', adminMiddleware, processWithdrawal);
@@ -87,5 +88,16 @@ router.patch('/payment-methods/:id', adminMiddleware, updatePaymentMethod);
 // Exchange Rate Management
 // ===============================
 router.post('/exchange-rate', adminMiddleware, updateExchangeRate);
+
+// ===============================
+// Payment Admin: Withdrawal routes
+// ===============================
+router.get('/payments/withdrawals', adminMiddleware, adminPaymentController.getWithdrawals);
+
+// ===============================
+// Payment Admin: Deposits & Logs
+// ===============================
+router.get('/payments/deposits', adminMiddleware, adminPaymentController.getDeposits);
+router.get('/payments/webhook-logs', adminMiddleware, adminPaymentController.getWebhookLogs);
 
 export default router;

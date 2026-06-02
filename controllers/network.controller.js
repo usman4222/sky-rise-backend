@@ -44,9 +44,17 @@ const getDownline = async (req, res) => {
     // Fetch total network tree details
     const node = await ReferralTree.findOne({ user: req.user._id });
 
+    // Count how many directs have active investments dynamically
+    const directUserIds = directs.map(d => d.user._id);
+    const activeDirects = await UserInvestment.distinct('user', {
+      user: { $in: directUserIds },
+      status: 'active'
+    });
+    const activeDirectsCount = activeDirects.length;
+
     return successResponse(res, 'Downlines retrieved successfully', {
       directReferralsCount: node ? node.directReferralsCount : 0,
-      activeDirectReferralsCount: node ? node.activeDirectReferralsCount : 0,
+      activeDirectReferralsCount: activeDirectsCount,
       totalTeamSize: node ? node.teamSize : 0,
       directReferralsList: directs.map(d => ({
         id: d.user._id,
