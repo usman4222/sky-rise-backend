@@ -12,90 +12,117 @@ import { verifyWebhookSignature } from '../services/coinpayments.service.js';
  */
 const handleCoinPaymentsIPN = async (req, res) => {
   try {
-    const signature = req.headers['x-coinpayments-signature'];
-    if (!signature) {
-      console.warn('CoinPayments IPN warning: Missing X-CoinPayments-Signature header');
-      return res.status(400).send('Missing signature header');
-    }
-
     const rawBody = req.rawBody;
+    const payload = req.body;
+
+    console.log('[CoinPayments IPN] Received IPN request');
+    console.log('[CoinPayments IPN] Headers:', req.headers);
+    console.log('[CoinPayments IPN] Payload:', payload);
+
     if (!rawBody || rawBody.length === 0) {
-      console.warn('CoinPayments IPN warning: Empty body');
+      console.warn('[CoinPayments IPN] Warning: Empty body');
       return res.status(400).send('Empty request body');
     }
 
-    // Webhook verification using rawBody and headers via clientSecret
+    // 1. Verify HMAC signature on incoming IPN using COINPAYMENTS_IPN_SECRET
     const isValid = verifyWebhookSignature(rawBody, req.headers, req);
     if (!isValid) {
-      console.error('CoinPayments IPN signature verification failed');
+      console.error('[CoinPayments IPN] Signature verification failed');
       return res.status(400).send('Invalid signature');
     }
 
-    const payload = req.body;
-    // Resolve transaction ID: invoiceId represents our internal orderId, txn_id/id represents CP id.
-    const txn_id = payload.invoiceId || payload.txn_id || payload.id;
-    if (!txn_id) {
-      console.error('CoinPayments IPN warning: Missing transaction/invoice identifier in body', payload);
-      return res.status(400).send('Missing transaction/invoice identifier');
+    // 2. Verify merchant ID if available in env
+    const merchantId = process.env.COINPAYMENTS_MERCHANT_ID;
+    if (merchantId && payload.merchant && payload.merchant !== merchantId) {
+      console.error('[CoinPayments IPN] Merchant ID mismatch. Received:', payload.merchant, 'Expected:', merchantId);
+      return res.status(400).send('Merchant ID mismatch');
     }
 
-    const status = payload.status;
-    const status_text = payload.status_text || (status === 100 || status === 'completed' || status === 'success' || status === 'Paid' ? 'Completed' : `Status: ${status}`);
-
-    // Optional validation of merchant ID (if sent in REST webhook body)
-    if (payload.merchant && process.env.COINPAYMENTS_MERCHANT_ID && payload.merchant !== process.env.COINPAYMENTS_MERCHANT_ID) {
-      console.error('CoinPayments IPN merchant mismatch:', payload.merchant);
-      return res.status(400).send('Merchant mismatch');
+    // 3. Verify IPN secret if sent in the payload
+    const ipnSecret = process.env.COINPAYMENTS_IPN_SECRET;
+    if (ipnSecret && payload.ipn_secret && payload.ipn_secret !== ipnSecret) {
+      console.error('[CoinPayments IPN] IPN Secret mismatch in body. Received:', payload.ipn_secret);
+      return res.status(400).send('IPN Secret mismatch');
     }
 
-    // Save webhook log for audit trail (idempotency support)
-    const existingWebhook = await PaymentWebhook.findOne({ transactionId: txn_id });
-    if (existingWebhook && existingWebhook.status === 'verified') {
+    // 4. Resolve deposit/order ID from custom or item_number
+    const orderId = payload.custom || payload.item_number;
+    const cpTxnId = payload.txn_id;
+
+    if (!orderId) {
+      console.error('[CoinPayments IPN] Missing order identifier in payload (custom/item_number)');
+      return res.status(400).send('Missing order identifier');
+    }
+
+    if (!cpTxnId) {
+      console.error('[CoinPayments IPN] Missing gateway transaction ID (txn_id)');
+      return res.status(400).send('Missing transaction ID');
+    }
+
+    // Find the corresponding pending deposit record
+    const deposit = await Deposit.findOne({
+      $or: [
+        { transactionId: orderId },
+        { gatewayTransactionId: cpTxnId }
+      ]
+    });
+
+    console.log('[CoinPayments IPN] Deposit matched:', Boolean(deposit));
+
+    if (!deposit) {
+      console.error(`[CoinPayments IPN] No matching deposit found for orderId: ${orderId} or cpTxnId: ${cpTxnId}`);
+      // Save webhook with error status
+      await PaymentWebhook.findOneAndUpdate(
+        { transactionId: cpTxnId },
+        {
+          gateway: 'coinpayments',
+          payload,
+          status: 'error',
+          remarks: `No matching deposit for orderId: ${orderId} or cpTxnId: ${cpTxnId}`
+        },
+        { upsert: true, new: true }
+      );
+      return res.status(200).send('IPN verified but no matching deposit found');
+    }
+
+    // Idempotency: If deposit is already completed/approved, do not process again
+    if (deposit.status === 'completed' || deposit.status === 'approved') {
+      console.log('[CoinPayments IPN] Deposit already processed/completed. Skipping duplicate credit.');
+      await PaymentWebhook.findOneAndUpdate(
+        { transactionId: cpTxnId },
+        {
+          gateway: 'coinpayments',
+          payload,
+          status: 'verified',
+          remarks: 'Duplicate IPN: Deposit was already completed'
+        },
+        { upsert: true, new: true }
+      );
       return res.status(200).send('IPN already processed');
     }
 
-    // Upsert or log receipt of the webhook
-    let webhookRecord = existingWebhook;
-    if (!webhookRecord) {
-      webhookRecord = await PaymentWebhook.create({
-        gateway: 'coinpayments',
-        transactionId: txn_id,
-        payload,
-        status: 'received',
-        remarks: `Received webhook status: ${status}`
-      });
-    }
+    const statusCode = Number(payload.status);
+    const isCompleted = statusCode >= 100 || statusCode === 2;
+    const isFailed = statusCode < 0;
 
-    const statusCode = Number(status);
-    const isCompleted = statusCode >= 100 || statusCode === 2 || status === 'completed' || status === 'success' || status === 'Paid';
-    const isFailed = statusCode < 0 || status === 'failed' || status === 'cancelled';
+    // Save webhook log for audit trail (idempotency support)
+    const webhookRecord = await PaymentWebhook.findOneAndUpdate(
+      { transactionId: cpTxnId },
+      {
+        gateway: 'coinpayments',
+        payload,
+        status: isCompleted ? 'verified' : isFailed ? 'error' : 'received',
+        remarks: `Processed status: ${payload.status}. Message: ${payload.status_text || ''}`
+      },
+      { upsert: true, new: true }
+    );
 
     if (isCompleted) {
-      // Find the corresponding pending deposit record by transactionId (internal) or gatewayTransactionId (external)
-      const deposit = await Deposit.findOne({
-        $or: [
-          { transactionId: txn_id },
-          { gatewayTransactionId: txn_id }
-        ]
-      });
-
-      if (!deposit) {
-        webhookRecord.status = 'error';
-        webhookRecord.remarks = 'No matching deposit record found for transactionId/invoiceId: ' + txn_id;
-        await webhookRecord.save();
-        return res.status(200).send('IPN verified but no matching deposit record found');
-      }
-
-      if (deposit.status === 'approved' || deposit.status === 'completed') {
-        webhookRecord.status = 'verified';
-        webhookRecord.remarks = 'Deposit was already completed/approved';
-        await webhookRecord.save();
-        return res.status(200).send('Deposit already approved');
-      }
-
-      // Mark deposit as approved
-      deposit.status = 'approved';
-      deposit.remarks = `CoinPayments Auto-Approved. Details: ${status_text || 'Completed'}`;
+      // Mark deposit as completed
+      deposit.status = 'completed';
+      deposit.gatewayTransactionId = cpTxnId;
+      deposit.gatewayResponse = payload;
+      deposit.remarks = `CoinPayments Legacy Auto-Approved. Status: ${payload.status_text || statusCode}`;
       deposit.processedAt = new Date();
       await deposit.save();
 
@@ -109,6 +136,8 @@ const handleCoinPaymentsIPN = async (req, res) => {
       wallet.deposit = prevBal + deposit.amountUSDT;
       await wallet.save();
 
+      console.log('[CoinPayments IPN] Wallet credited: true');
+
       // Log wallet history
       await WalletHistory.create({
         user: deposit.user,
@@ -118,56 +147,47 @@ const handleCoinPaymentsIPN = async (req, res) => {
         previousBalance: prevBal,
         newBalance: wallet.deposit,
         category: 'deposit',
-        description: `CoinPayments auto-approved deposit. amountUSDT: $${deposit.amountUSDT.toFixed(2)}. Transaction ID: ${txn_id}`,
+        description: `CoinPayments Legacy auto-approved deposit. Amount: $${deposit.amountUSDT.toFixed(2)}. Gateway Tx: ${cpTxnId}`,
         referenceModel: 'Deposit',
         referenceId: deposit._id
       });
 
-      // Create system notification
-      await Notification.create({
-        user: deposit.user,
-        title: 'CoinPayments Deposit Approved! 💰',
-        message: `Your USDT deposit of $${deposit.amountUSDT.toFixed(2)} has been automatically verified and credited to your deposit wallet.`,
-        category: 'deposit'
-      });
-
-      webhookRecord.status = 'verified';
-      webhookRecord.remarks = 'Successfully processed completed payment webhook';
-      await webhookRecord.save();
-
-      return res.status(200).send('Webhook Processed and User Wallet Credited');
-    } else if (isFailed) {
-      // Payment failed or cancelled
-      const deposit = await Deposit.findOne({
-        $or: [
-          { transactionId: txn_id },
-          { gatewayTransactionId: txn_id }
-        ]
-      });
-
-      if (deposit && deposit.status === 'pending') {
-        deposit.status = 'rejected';
-        deposit.remarks = `CoinPayments webhook cancelled/failed. Status: ${status_text || 'Failed'}`;
-        deposit.processedAt = new Date();
-        await deposit.save();
-
+      // Send notification if notification model exists
+      if (Notification) {
         await Notification.create({
           user: deposit.user,
-          title: 'CoinPayments Deposit Failed ❌',
-          message: `Your USDT deposit of $${deposit.amountUSDT.toFixed(2)} failed or was cancelled by CoinPayments.`,
+          title: 'CoinPayments Deposit Approved! 💰',
+          message: `Your deposit of $${deposit.amountUSDT.toFixed(2)} (${process.env.COINPAYMENTS_CURRENCY || 'LTCT'}) has been automatically verified and credited to your deposit wallet.`,
           category: 'deposit'
         });
       }
 
-      webhookRecord.status = 'error';
-      webhookRecord.remarks = `Payment failed/cancelled with status ${status}`;
-      await webhookRecord.save();
-      return res.status(200).send('Webhook processed (payment failed)');
+      return res.status(200).send('IPN Processed and User Wallet Credited');
+    } else if (isFailed) {
+      // Payment failed or cancelled
+      deposit.status = 'rejected';
+      deposit.gatewayTransactionId = cpTxnId;
+      deposit.gatewayResponse = payload;
+      deposit.remarks = `CoinPayments Legacy rejected. Status: ${payload.status_text || statusCode}`;
+      deposit.processedAt = new Date();
+      await deposit.save();
+
+      console.log('[CoinPayments IPN] Payment failed, deposit marked as rejected');
+
+      if (Notification) {
+        await Notification.create({
+          user: deposit.user,
+          title: 'CoinPayments Deposit Failed ❌',
+          message: `Your deposit request of $${deposit.amountUSDT.toFixed(2)} (${process.env.COINPAYMENTS_CURRENCY || 'LTCT'}) was marked as failed or cancelled by CoinPayments.`,
+          category: 'deposit'
+        });
+      }
+
+      return res.status(200).send('IPN Processed (payment failed)');
     } else {
       // Pending statuses (waiting for confirmations, etc.)
-      webhookRecord.remarks = `Webhook pending confirmations. Current status: ${status}`;
-      await webhookRecord.save();
-      return res.status(200).send('Webhook received but pending confirmations');
+      console.log(`[CoinPayments IPN] Payment pending confirmations. Status: ${statusCode}`);
+      return res.status(200).send('IPN received but pending confirmations');
     }
   } catch (error) {
     console.error('handleCoinPaymentsIPN error:', error);

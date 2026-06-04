@@ -1,37 +1,24 @@
 import crypto from 'crypto';
 
 /**
- * CoinPayments USDT.TRC20 Gateway Service - REST v2
+ * CoinPayments USDT/LTCT Gateway Service - Legacy API (v1)
  */
 
 const getEnv = (key, fallback = '') => {
   return (process.env[key] || fallback).trim();
 };
 
-const CP_API_URL = getEnv('COINPAYMENTS_API_URL', 'https://a-api.coinpayments.net');
-const CP_CLIENT_ID = getEnv('COINPAYMENTS_CLIENT_ID');
-const CP_CLIENT_SECRET = getEnv('COINPAYMENTS_CLIENT_SECRET');
-const CP_CURRENCY = getEnv('COINPAYMENTS_CURRENCY', 'USDT.TRC20');
-
-export function getCoinPaymentsTimestamp() {
-  return new Date().toISOString().split('.')[0];
-}
-
-export function createCoinPaymentsSignature({
-  method,
-  url,
-  clientId,
-  clientSecret,
-  timestamp,
-  rawBody
-}) {
-  const canonicalMessage = `\ufeff${method.toUpperCase()}${url}${clientId}${timestamp}${rawBody}`;
-
-  return crypto
-    .createHmac('sha256', clientSecret)
-    .update(canonicalMessage, 'utf8')
-    .digest('base64');
-}
+const getLegacyConfig = () => {
+  return {
+    url: getEnv('COINPAYMENTS_LEGACY_API_URL', 'https://www.coinpayments.net/api.php'),
+    publicKey: getEnv('COINPAYMENTS_PUBLIC_KEY'),
+    privateKey: getEnv('COINPAYMENTS_PRIVATE_KEY'),
+    currency: getEnv('COINPAYMENTS_CURRENCY', 'LTCT'),
+    ipnSecret: getEnv('COINPAYMENTS_IPN_SECRET', 'skyrise_ipn_secret_2026'),
+    backendUrl: getEnv('BACKEND_URL', 'https://sulphate-esteemed-blurry.ngrok-free.dev'),
+    appUrl: getEnv('APP_URL', 'http://localhost:3000')
+  };
+};
 
 function safeJsonParse(text) {
   try {
@@ -41,238 +28,125 @@ function safeJsonParse(text) {
   }
 }
 
+/**
+ * Create a transaction using Legacy CoinPayments API (cmd=create_transaction)
+ */
 export const createInvoice = async (options = {}) => {
-  const {
-    amountUSDT,
-    orderId,
-    buyerEmail,
-    webhookUrl,
-    successUrl,
-    cancelUrl
-  } = options;
+  const { amountUSDT, orderId, buyerEmail, webhookUrl, successUrl, cancelUrl } = options;
+  const config = getLegacyConfig();
 
-  if (!CP_CLIENT_ID || !CP_CLIENT_SECRET) {
+  if (!config.publicKey || !config.privateKey) {
     throw new Error(
-      'CoinPayments credentials not configured. Set COINPAYMENTS_CLIENT_ID and COINPAYMENTS_CLIENT_SECRET in .env'
+      'CoinPayments legacy credentials not configured. Set COINPAYMENTS_PUBLIC_KEY and COINPAYMENTS_PRIVATE_KEY in .env'
     );
   }
 
   const numericAmount = Number(amountUSDT);
-
   if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
-    throw new Error('Invalid USDT amount for CoinPayments invoice');
+    throw new Error('Invalid amount for CoinPayments invoice');
   }
 
   if (!orderId) {
     throw new Error('orderId is required for CoinPayments invoice');
   }
 
-  const backendUrl = getEnv('BACKEND_URL', 'http://localhost:5000');
-  const appUrl = getEnv('APP_URL', 'http://localhost:3000');
+  const notifyUrl = webhookUrl || `${config.backendUrl}/api/coinpayments/webhook`;
+  const returnUrl = successUrl || `${config.appUrl}/dashboard/deposits?status=success&orderId=${encodeURIComponent(orderId)}`;
+  const abortUrl = cancelUrl || `${config.appUrl}/dashboard/deposits?status=cancelled&orderId=${encodeURIComponent(orderId)}`;
 
-  const notifyUrl = webhookUrl || `${backendUrl}/api/coinpayments/webhook`;
-  const amountString = numericAmount.toFixed(2);
-
-  const requestBody = {
-    currency: 'USD',
-    invoiceId: orderId,
-    description: `SkyRise USDT Deposit - ${orderId}`,
-
-    items: [
-      {
-        name: 'USDT Wallet Deposit',
-        description: `SkyRise USDT Deposit - ${orderId}`,
-        quantity: {
-          value: 1,
-          type: 'quantity'
-        },
-        amount: amountString
-      }
-    ],
-
-    amount: {
-      total: amountString,
-      breakdown: {
-        subtotal: amountString
-      }
-    },
-
-    buyer: buyerEmail
-      ? {
-        emailAddress: buyerEmail
-      }
-      : undefined,
-
-    webhooks: [
-      {
-        notificationsUrl: notifyUrl,
-        notifications: [
-          'invoiceCreated',
-          'invoicePending',
-          'invoicePaid',
-          'invoiceCompleted',
-          'invoiceCancelled',
-          'invoiceTimedOut',
-          'invoicePaymentCreated',
-          'invoicePaymentTimedOut'
-        ]
-      }
-    ],
-
-    payment: {
-      paymentCurrency: CP_CURRENCY,
-      refundEmail: buyerEmail || 'support@skyrisefuture.com'
-    },
-
-    successUrl:
-      successUrl ||
-      `${appUrl}/dashboard/deposits?status=success&orderId=${encodeURIComponent(orderId)}`,
-
-    cancelUrl:
-      cancelUrl ||
-      `${appUrl}/dashboard/deposits?status=cancelled&orderId=${encodeURIComponent(orderId)}`,
-
-    requireBuyerNameAndEmail: false,
-    hideShoppingCart: true,
-
-    customData: {
-      internalOrderId: orderId,
-      source: 'skyrise-usdt-deposit'
-    },
-
-    metadata: {
-      integration: 'skyrise-backend',
-      hostname: backendUrl
-    }
+  // Prepare Legacy CoinPayments API fields
+  const payload = {
+    cmd: 'create_transaction',
+    key: config.publicKey,
+    version: '1',
+    amount: numericAmount.toString(),
+    currency1: config.currency,
+    currency2: config.currency,
+    buyer_email: buyerEmail || 'support@skyrisefuture.com',
+    item_name: 'SkyRise Deposit',
+    item_number: orderId,
+    custom: orderId,
+    ipn_url: notifyUrl,
+    success_url: returnUrl,
+    cancel_url: abortUrl
   };
 
-  if (!requestBody.buyer) {
-    delete requestBody.buyer;
-  }
+  const params = new URLSearchParams(payload);
+  const rawFormBody = params.toString();
 
-  const method = 'POST';
-  const url = `${CP_API_URL}/api/v2/merchant/invoices`;
-  const timestamp = getCoinPaymentsTimestamp();
-  const rawBody = JSON.stringify(requestBody);
+  // Sign request body using HMAC-SHA512 with the private key
+  const signature = crypto
+    .createHmac('sha512', config.privateKey)
+    .update(rawFormBody)
+    .digest('hex');
 
-  const signature = createCoinPaymentsSignature({
-    method,
-    url,
-    clientId: CP_CLIENT_ID,
-    clientSecret: CP_CLIENT_SECRET,
-    timestamp,
-    rawBody
-  });
+  // Print helpful diagnostics logs (do NOT log private key)
+  console.log('[CoinPayments Legacy API] URL:', config.url);
+  console.log('[CoinPayments Legacy API] Public key exists:', Boolean(config.publicKey));
+  console.log('[CoinPayments Legacy API] Private key exists:', Boolean(config.privateKey));
+  console.log('[CoinPayments Legacy API] Currency:', config.currency);
+  console.log('[CoinPayments Legacy API] Request body (unsigned):', payload);
+  console.log('[CoinPayments Legacy API] Request body (raw encoded):', rawFormBody);
+  console.log('[CoinPayments Legacy API] Calculated Signature:', signature);
 
-  console.log('[CoinPayments createInvoice DEBUG] URL:', url);
-  console.log('[CoinPayments createInvoice DEBUG] Timestamp:', timestamp);
-  console.log('[CoinPayments createInvoice DEBUG] ClientID exists:', Boolean(CP_CLIENT_ID));
-  console.log('[CoinPayments createInvoice DEBUG] ClientSecret exists:', Boolean(CP_CLIENT_SECRET));
-  console.log('[CoinPayments createInvoice DEBUG] Currency:', CP_CURRENCY);
-  console.log('[CoinPayments createInvoice DEBUG] Notify URL:', notifyUrl);
-  console.log('[CoinPayments createInvoice DEBUG] Raw Body:', rawBody);
-
-  const response = await fetch(url, {
-    method,
+  const response = await fetch(config.url, {
+    method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'X-CoinPayments-Client': CP_CLIENT_ID,
-      'X-CoinPayments-Timestamp': timestamp,
-      'X-CoinPayments-Signature': signature
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'HMAC': signature
     },
-    body: rawBody
+    body: rawFormBody
   });
 
   const responseText = await response.text();
-
-  console.log('[CoinPayments createInvoice DEBUG] Response Status:', response.status);
-  console.log('[CoinPayments createInvoice DEBUG] Response Text:', responseText);
+  console.log('[CoinPayments Legacy API] Response Status:', response.status);
+  console.log('[CoinPayments Legacy API] Response Body:', responseText);
 
   const data = safeJsonParse(responseText);
 
   if (!response.ok) {
-    const validationErrors = data?.errors ? JSON.stringify(data.errors) : '';
-    const errorMessage =
-      data?.message ||
-      data?.error ||
-      data?.title ||
-      data?.detail ||
-      responseText ||
-      `CoinPayments API error (HTTP ${response.status})`;
-
     throw new Error(
-      `CoinPayments API error (HTTP ${response.status}): ${errorMessage}${validationErrors ? ` | Errors: ${validationErrors}` : ''
-      }`
+      `CoinPayments Legacy API returned HTTP ${response.status}: ${responseText}`
     );
   }
 
   if (!data) {
     throw new Error(
-      `CoinPayments API returned non-JSON response (HTTP ${response.status}): ${responseText || '(Empty Response)'
-      }`
+      `CoinPayments Legacy API returned non-JSON response: ${responseText}`
     );
   }
 
-  const createdInvoice = Array.isArray(data.invoices) ? data.invoices[0] : data;
-
-  if (!createdInvoice) {
-    throw new Error(`CoinPayments invoice response missing invoice data: ${JSON.stringify(data)}`);
+  if (data.error !== 'ok') {
+    throw new Error(`CoinPayments Legacy API error: ${data.error}`);
   }
 
-  const invoiceId =
-    createdInvoice.id ||
-    createdInvoice.invoiceId ||
-    createdInvoice.invoiceID ||
-    orderId;
-
-  const checkoutUrl =
-    createdInvoice.checkoutLink ||
-    createdInvoice.link ||
-    createdInvoice.invoiceUrl ||
-    createdInvoice.redirectUrl;
-
-  if (!checkoutUrl) {
-    throw new Error(
-      `CoinPayments invoice created but no checkout URL returned: ${JSON.stringify(data)}`
-    );
+  const result = data.result;
+  if (!result || !result.checkout_url) {
+    throw new Error(`CoinPayments Legacy API missing checkout_url: ${JSON.stringify(data)}`);
   }
-
-  const paymentId = createdInvoice.payment?.paymentId || null;
-
-  const expiresAt = createdInvoice.payment?.expires
-    ? new Date(createdInvoice.payment.expires)
-    : new Date(Date.now() + 60 * 60 * 1000);
 
   return {
-    invoiceId,
-    checkoutUrl,
-    link: createdInvoice.link || checkoutUrl,
-    paymentId,
-    expiresAt,
+    invoiceId: result.txn_id, // Gateway transaction ID
+    checkoutUrl: result.checkout_url,
+    statusUrl: result.status_url,
+    expiresAt: result.timeout ? new Date(Date.now() + result.timeout * 1000) : new Date(Date.now() + 60 * 60 * 1000),
     rawResponse: data
   };
 };
 
+/**
+ * Verify HMAC signature on incoming IPN webhooks using COINPAYMENTS_IPN_SECRET
+ */
 export const verifyWebhookSignature = (rawBody, headers, req) => {
-  const client =
-    headers['x-coinpayments-client'] ||
-    headers['X-CoinPayments-Client'];
-
-  const timestamp =
-    headers['x-coinpayments-timestamp'] ||
-    headers['X-CoinPayments-Timestamp'];
-
-  const signature =
-    headers['x-coinpayments-signature'] ||
-    headers['X-CoinPayments-Signature'];
-
-  if (!client || !timestamp || !signature) {
-    console.error('[CoinPayments webhook] Missing required signature headers');
+  const hmacHeader = headers['hmac'] || headers['HMAC'];
+  if (!hmacHeader) {
+    console.error('[CoinPayments Webhook] Missing HMAC header');
     return false;
   }
 
-  if (!CP_CLIENT_SECRET) {
-    console.error('[CoinPayments webhook] COINPAYMENTS_CLIENT_SECRET not configured');
+  const config = getLegacyConfig();
+  if (!config.ipnSecret) {
+    console.error('[CoinPayments Webhook] COINPAYMENTS_IPN_SECRET is not configured');
     return false;
   }
 
@@ -280,72 +154,22 @@ export const verifyWebhookSignature = (rawBody, headers, req) => {
     ? rawBody.toString('utf8')
     : String(rawBody || '');
 
-  const method = req?.method ? req.method.toUpperCase() : 'POST';
+  const calculatedSignature = crypto
+    .createHmac('sha512', config.ipnSecret)
+    .update(rawBodyStr)
+    .digest('hex');
 
-  const urlsToTry = [];
-
-  if (req) {
-    const host = req.get?.('host');
-    const originalUrl = req.originalUrl || req.url;
-
-    if (host && originalUrl) {
-      const forwardedProto = req.get?.('x-forwarded-proto');
-      const protocol = forwardedProto || req.protocol || 'https';
-
-      urlsToTry.push(`${protocol}://${host}${originalUrl}`);
-
-      if (protocol === 'http') {
-        urlsToTry.push(`https://${host}${originalUrl}`);
-      }
-
-      if (protocol === 'https') {
-        urlsToTry.push(`http://${host}${originalUrl}`);
-      }
-    }
+  const isValid = hmacHeader.toLowerCase() === calculatedSignature.toLowerCase();
+  if (!isValid) {
+    console.error('[CoinPayments Webhook] Signature verification failed!');
+    console.error('  Received HMAC:', hmacHeader);
+    console.error('  Calculated HMAC:', calculatedSignature);
   }
 
-  const backendUrl = getEnv('BACKEND_URL', 'http://localhost:5000');
-
-  urlsToTry.push(`${backendUrl}/api/coinpayments/webhook`);
-
-  if (backendUrl.startsWith('http://')) {
-    urlsToTry.push(`${backendUrl.replace('http://', 'https://')}/api/coinpayments/webhook`);
-  }
-
-  if (backendUrl.startsWith('https://')) {
-    urlsToTry.push(`${backendUrl.replace('https://', 'http://')}/api/coinpayments/webhook`);
-  }
-
-  const uniqueUrls = [...new Set(urlsToTry.filter(Boolean))];
-
-  for (const url of uniqueUrls) {
-    const calculatedSignature = createCoinPaymentsSignature({
-      method,
-      url,
-      clientId: client,
-      clientSecret: CP_CLIENT_SECRET,
-      timestamp,
-      rawBody: rawBodyStr
-    });
-
-    const receivedBuffer = Buffer.from(signature);
-    const calculatedBuffer = Buffer.from(calculatedSignature);
-
-    if (
-      receivedBuffer.length === calculatedBuffer.length &&
-      crypto.timingSafeEqual(receivedBuffer, calculatedBuffer)
-    ) {
-      return true;
-    }
-  }
-
-  console.error('[CoinPayments webhook] Signature validation failed. Tried URLs:', uniqueUrls);
-  return false;
+  return isValid;
 };
 
 export default {
-  getCoinPaymentsTimestamp,
-  createCoinPaymentsSignature,
   createInvoice,
   verifyWebhookSignature
 };

@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import 'dotenv/config';
 import connectDB from './config/db.js';
+import rewardEngine from './utils/rewardEngine.js';
 
 // Routes
 import authRoutes from './routes/auth.routes.js';
@@ -14,6 +15,10 @@ import webhookRoutes from './routes/webhook.routes.js';
 import paymentRoutes from './routes/payment.routes.js';
 import rewardsRoutes from './routes/rewards.routes.js';
 import supportRoutes from './routes/support.routes.js';
+import jobRoutes from './routes/job.routes.js';
+import paymentMethodRoutes from './routes/payment_method.routes.js';
+import weeklySalaryRoutes from './routes/weekly_salary.routes.js';
+import withdrawalRoutes from './routes/withdrawal.routes.js';
 
 // Group 1: Identity & RBAC
 import User from './models/auth/user.model.js';
@@ -59,6 +64,7 @@ import VipQualification from './models/rewards/vip_qualification.model.js';
 import VipSalary from './models/rewards/vip_salary.model.js';
 import AchievementRank from './models/rewards/achievement_rank.model.js';
 import AchievementReward from './models/rewards/achievement_reward.model.js';
+import LeadershipReward from './models/rewards/leadership_reward.model.js';
 
 // Group 6: System & Admin Logs
 import SystemSettings from './models/system/system_settings.model.js';
@@ -142,7 +148,8 @@ const compiledModels = {
     VipQualification,
     VipSalary,
     AchievementRank,
-    AchievementReward
+    AchievementReward,
+    LeadershipReward
   },
   system_ops_domain: {
     SystemSettings,
@@ -199,6 +206,10 @@ app.use('/api/webhooks', webhookRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/rewards', rewardsRoutes);
 app.use('/api/support', supportRoutes);
+app.use('/api/jobs', jobRoutes);
+app.use('/api/payment-methods', paymentMethodRoutes);
+app.use('/api/weekly-salary', weeklySalaryRoutes);
+app.use('/api/withdrawals', withdrawalRoutes);
 
 // Dedicated CoinPayments webhook endpoint (matches CoinPayments dashboard config)
 import webhookController from './controllers/webhook.controller.js';
@@ -288,6 +299,34 @@ app.use((error, req, res, next) => {
     ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
   });
 });
+
+// Automatic ROI Distribution in Test Mode
+const { runDailyRoiPayout, runWeeklyVipSalaryPayout } = rewardEngine;
+
+if (process.env.ROI_TEST_MODE === 'true') {
+  console.log('⏳ ROI Test Mode is active. Auto ROI payouts scheduled every 1 minute.');
+  setInterval(async () => {
+    try {
+      console.log('⏳ Scheduled ROI check: Triggering runDailyRoiPayout...');
+      await runDailyRoiPayout();
+    } catch (error) {
+      console.error('❌ Scheduled ROI payout failed:', error.message);
+    }
+  }, 60000);
+}
+
+// Weekly VIP Salary Payout Schedule
+const vipIntervalMs = process.env.ROI_TEST_MODE === 'true' ? 7 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
+console.log(`⏳ Weekly VIP Salary scheduler loaded. Runs every ${process.env.ROI_TEST_MODE === 'true' ? '7 minutes' : '7 days'}.`);
+setInterval(async () => {
+  try {
+    console.log('⏳ Scheduled VIP Salary check: Triggering runWeeklyVipSalaryPayout...');
+    await runWeeklyVipSalaryPayout();
+  } catch (error) {
+    console.error('❌ Scheduled VIP salary payout failed:', error.message);
+  }
+}, vipIntervalMs);
+
 
 const PORT = process.env.PORT || 5000;
 

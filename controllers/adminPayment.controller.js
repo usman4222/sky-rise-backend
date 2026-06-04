@@ -19,18 +19,33 @@ import { sendError, successResponse } from '../utils/response.js';
  */
 const getWithdrawals = async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
     if (req.query.currency) filter.withdrawalCurrency = req.query.currency.toUpperCase();
 
+    const totalItems = await Withdrawal.countDocuments(filter);
+    const totalPages = Math.ceil(totalItems / limit);
+
     const withdrawals = await Withdrawal.find(filter)
       .populate('user', 'name email referralCode')
       .populate('withdrawalAccount')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
     return successResponse(res, 'Admin withdrawals retrieved', {
-      count: withdrawals.length,
-      withdrawals
+      count: totalItems,
+      withdrawals,
+      pagination: {
+        totalItems,
+        totalPages,
+        currentPage: page,
+        limit
+      }
     });
   } catch (error) {
     return sendError(res, 'Failed to get withdrawals', 500, error);
@@ -232,19 +247,34 @@ const markWithdrawalPaid = async (req, res) => {
  */
 const getDeposits = async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
     if (req.query.currency) filter.currency = req.query.currency.toUpperCase();
     if (req.query.gateway) filter.gateway = req.query.gateway;
 
+    const totalItems = await Deposit.countDocuments(filter);
+    const totalPages = Math.ceil(totalItems / limit);
+
     const deposits = await Deposit.find(filter)
       .populate('user', 'name email referralCode')
       .populate('paymentMethod', 'name gateway currency')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
     return successResponse(res, 'Admin deposits retrieved', {
-      count: deposits.length,
-      deposits
+      count: totalItems,
+      deposits,
+      pagination: {
+        totalItems,
+        totalPages,
+        currentPage: page,
+        limit
+      }
     });
   } catch (error) {
     return sendError(res, 'Failed to get deposits', 500, error);
@@ -262,15 +292,31 @@ const getDeposits = async (req, res) => {
  */
 const getWebhookLogs = async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
     const filter = {};
     if (req.query.gateway) filter.gateway = req.query.gateway;
     if (req.query.status) filter.status = req.query.status;
 
-    const logs = await PaymentWebhook.find(filter).sort({ createdAt: -1 }).limit(100);
+    const totalItems = await PaymentWebhook.countDocuments(filter);
+    const totalPages = Math.ceil(totalItems / limit);
+
+    const logs = await PaymentWebhook.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
     return successResponse(res, 'Webhook logs retrieved', {
-      count: logs.length,
-      logs
+      count: totalItems,
+      logs,
+      pagination: {
+        totalItems,
+        totalPages,
+        currentPage: page,
+        limit
+      }
     });
   } catch (error) {
     return sendError(res, 'Failed to get webhook logs', 500, error);

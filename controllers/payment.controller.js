@@ -45,11 +45,18 @@ const createPkrDeposit = async (req, res) => {
 
     const numericPKR = Number(amountPKR);
 
-    // Validate minimum deposit
-    const settings = await SystemSettings.findOne({});
-    const minDepositPKR = 500; // Rs. 500 minimum
-    if (numericPKR < minDepositPKR) {
-      return sendError(res, `Minimum PKR deposit amount is Rs. ${minDepositPKR}`, 400);
+    // Get exchange rate
+    const latestRate = await ExchangeRate.findOne({}).sort({ createdAt: -1 });
+    const exchangeRate = latestRate ? latestRate.rate : 278;
+    const amountUSDT = numericPKR / exchangeRate;
+
+    // Validate minimum deposit ($10)
+    if (amountUSDT < 10) {
+      return sendError(
+        res,
+        `Minimum deposit allowed is $10.00 (equivalent to Rs. ${(10 * exchangeRate).toFixed(2)} at the current rate of Rs. ${exchangeRate}/USDT). You entered Rs. ${numericPKR} ($${amountUSDT.toFixed(2)})`,
+        400
+      );
     }
 
     // Find active PayFast payment method
@@ -62,11 +69,6 @@ const createPkrDeposit = async (req, res) => {
     if (!method) {
       return sendError(res, 'PayFast PKR deposit method is not currently available', 400);
     }
-
-    // Get exchange rate
-    const latestRate = await ExchangeRate.findOne({}).sort({ createdAt: -1 });
-    const exchangeRate = latestRate ? latestRate.rate : 278;
-    const amountUSDT = numericPKR / exchangeRate;
 
     // Generate unique order ID
     const orderId = generateOrderId('PKR');
@@ -314,64 +316,135 @@ const createUsdtDeposit = async (req, res) => {
       return sendError(res, 'Minimum USDT deposit amount is $10', 400);
     }
 
-    // Find active CoinPayments method
-    const method = await PaymentMethod.findOne({
+    // Find active CoinPayments method or fallback/create one for robust testing
+    let method = await PaymentMethod.findOne({
       gateway: 'coinpayments',
       currency: 'USDT',
       isActive: true
     });
 
     if (!method) {
-      return sendError(res, 'CoinPayments USDT deposit method is not currently available', 400);
+      method = await PaymentMethod.findOne({ gateway: 'coinpayments' });
+      if (!method) {
+        method = await PaymentMethod.create({
+          name: 'CoinPayments USDT Deposit',
+          type: 'crypto',
+          currency: 'USDT',
+          gateway: 'coinpayments',
+          direction: 'deposit',
+          instructions: 'Send USDT (TRC20) via CoinPayments.',
+          accountDetails: {
+            currency: process.env.COINPAYMENTS_CURRENCY || 'LTCT'
+          },
+          minDeposit: 10,
+          isActive: true
+        });
+      }
     }
 
     // Generate unique order ID
     const orderId = generateOrderId('USDT');
 
-    // Create pending deposit record
-    const deposit = await Deposit.create({
-      user: req.user._id,
-      currency: 'USDT',
-      amountPKR: null,
-      amountUSDT: numericUSDT,
-      exchangeRate: null,
-      paymentMethod: method._id,
-      gateway: 'coinpayments',
-      transactionId: orderId,
-      status: 'pending',
-      remarks: 'Awaiting CoinPayments USDT.TRC20 payment'
-    });
-
-    // Create CoinPayments invoice
-    try {
-      const invoice = await createCPInvoice({
+    // Check if Sandbox Mode is active for instant auto-approval
+    if (process.env.COINPAYMENTS_MODE === 'sandbox') {
+      const mockTx = 'MOCK_TX_' + crypto.randomBytes(4).toString('hex').toUpperCase();
+      const deposit = await Deposit.create({
+        user: req.user._id,
+        currency: 'USDT',
+        amountPKR: null,
         amountUSDT: numericUSDT,
-        orderId,
-        buyerEmail: req.user.email
+        exchangeRate: null,
+        paymentMethod: method._id,
+        gateway: 'coinpayments',
+        transactionId: orderId,
+        gatewayTransactionId: mockTx,
+        status: 'completed',
+        remarks: 'MOCK Sandbox Auto-Approved'
       });
 
-      deposit.gatewayTransactionId = invoice.invoiceId;
-      deposit.checkoutUrl = invoice.checkoutUrl;
-      deposit.gatewayResponse = invoice.rawResponse;
-      deposit.expiresAt = invoice.expiresAt;
-      await deposit.save();
+      // Credit wallet
+      let wallet = await Wallet.findOne({ user: req.user._id });
+      if (!wallet) {
+        wallet = new Wallet({ user: req.user._id });
+      }
+      const prevBal = wallet.deposit || 0;
+      wallet.deposit = prevBal + numericUSDT;
+      await wallet.save();
 
-      return successResponse(res, 'USDT deposit invoice created. Redirect to CoinPayments to complete payment.', {
+      // Log wallet history
+      await WalletHistory.create({
+        user: req.user._id,
+        walletType: 'deposit',
+        type: 'credit',
+        amount: numericUSDT,
+        previousBalance: prevBal,
+        newBalance: wallet.deposit,
+        category: 'deposit',
+        description: `MOCK Sandbox auto-approved deposit. Amount: $${numericUSDT.toFixed(2)}. Gateway Tx: ${mockTx}`,
+        referenceModel: 'Deposit',
+        referenceId: deposit._id
+      });
+
+      // Create notification
+      await Notification.create({
+        user: req.user._id,
+        title: 'MOCK Deposit Approved! 💰',
+        message: `Your mock sandbox deposit of $${numericUSDT.toFixed(2)} has been instantly approved and credited.`,
+        category: 'deposit'
+      });
+
+      const successUrl = `${process.env.APP_URL || 'http://localhost:3000'}/dashboard/deposits?status=success&orderId=${orderId}`;
+
+      return successResponse(res, 'MOCK Sandbox deposit auto-approved.', {
         deposit: {
           id: deposit._id,
           transactionId: orderId,
           amountUSDT: numericUSDT,
           status: deposit.status,
-          checkoutUrl: invoice.checkoutUrl,
-          invoiceId: invoice.invoiceId,
-          expiresAt: invoice.expiresAt
+          checkoutUrl: successUrl,
+          invoiceId: mockTx
+        }
+      }, 201);
+    }
+
+    // Live mode: Create real CoinPayments invoice
+    try {
+      const cpInvoice = await createCPInvoice({
+        amountUSDT: numericUSDT,
+        orderId,
+        buyerEmail: req.user.email
+      });
+
+      const deposit = await Deposit.create({
+        user: req.user._id,
+        currency: 'USDT',
+        amountPKR: null,
+        amountUSDT: numericUSDT,
+        exchangeRate: null,
+        paymentMethod: method._id,
+        gateway: 'coinpayments',
+        transactionId: orderId,
+        gatewayTransactionId: cpInvoice.invoiceId,
+        status: 'pending',
+        checkoutUrl: cpInvoice.checkoutUrl,
+        expiresAt: cpInvoice.expiresAt,
+        remarks: 'Awaiting CoinPayments USDT payment (Real/Live Transaction)'
+      });
+
+      return successResponse(res, 'USDT deposit initiated. Redirect to CoinPayments to complete payment.', {
+        deposit: {
+          id: deposit._id,
+          transactionId: orderId,
+          amountUSDT: numericUSDT,
+          status: deposit.status,
+          checkoutUrl: cpInvoice.checkoutUrl,
+          invoiceId: cpInvoice.invoiceId,
+          expiresAt: cpInvoice.expiresAt
         }
       }, 201);
     } catch (cpError) {
-      deposit.status = 'rejected';
-      deposit.remarks = `CoinPayments invoice creation failed: ${cpError.message}`;
-      await deposit.save();
-      return sendError(res, `CoinPayments checkout failed: ${cpError.message}`, 500);
+      console.error('CoinPayments Live Invoice Creation Error:', cpError);
+      return sendError(res, `Failed to initialize CoinPayments invoice: ${cpError.message}`, 500);
     }
   } catch (error) {
     console.error('createUsdtDeposit error:', error);
@@ -416,7 +489,7 @@ const withdrawPkr = async (req, res) => {
   let wallet = null;
   let sourceWallet = '';
   let numericUSDT = 0;
-  
+
   try {
     const { amountUSDT, sourceWallet: requestedWallet, withdrawalAccountId } = req.body;
     sourceWallet = requestedWallet;
@@ -491,6 +564,48 @@ const withdrawPkr = async (req, res) => {
     prevBalance = wallet[sourceWallet] || 0;
     wallet[sourceWallet] = prevBalance - numericUSDT;
     await wallet.save();
+
+    // Check if Sandbox Mode is active for instant auto-approval
+    if (process.env.COINPAYMENTS_MODE === 'sandbox') {
+      const mockTxHash = 'MOCK_PKR_HASH_' + crypto.randomBytes(16).toString('hex').toUpperCase();
+      const withdrawal = await Withdrawal.create({
+        user: req.user._id,
+        sourceWallet,
+        withdrawalCurrency: 'PKR',
+        amountUSDT: numericUSDT,
+        amountPKR,
+        exchangeRate,
+        feeUSDT,
+        payableAmountUSDT,
+        payableAmountPKR,
+        withdrawalAccount: withdrawalAccountId,
+        txHash: mockTxHash,
+        status: 'approved',
+        remarks: 'MOCK Sandbox PKR withdrawal processed instantly'
+      });
+
+      await WalletHistory.create({
+        user: req.user._id,
+        walletType: sourceWallet,
+        type: 'debit',
+        amount: numericUSDT,
+        previousBalance: prevBalance,
+        newBalance: wallet[sourceWallet],
+        category: 'withdrawal',
+        description: `MOCK Sandbox PKR withdrawal completed. Amount: $${numericUSDT}. Fee: $${feeUSDT.toFixed(2)}. Payout hash: ${mockTxHash}`,
+        referenceModel: 'Withdrawal',
+        referenceId: withdrawal._id
+      });
+
+      await Notification.create({
+        user: req.user._id,
+        title: 'PKR Payout Completed! ✅',
+        message: `Your mock PKR payout of Rs. ${payableAmountPKR.toFixed(0)} ($${payableAmountUSDT.toFixed(2)}) has been successfully completed. Hash: ${mockTxHash}`,
+        category: 'withdrawal'
+      });
+
+      return successResponse(res, 'MOCK Sandbox PKR payout completed successfully', { withdrawal }, 200);
+    }
 
     // Call payout provider API
     let payoutResult;
@@ -648,6 +763,48 @@ const withdrawUsdt = async (req, res) => {
     prevBalance = wallet[sourceWallet] || 0;
     wallet[sourceWallet] = prevBalance - numericUSDT;
     await wallet.save();
+
+    // Check if Sandbox Mode is active for instant auto-approval
+    if (process.env.COINPAYMENTS_MODE === 'sandbox') {
+      const mockTxHash = 'MOCK_HASH_' + crypto.randomBytes(16).toString('hex').toUpperCase();
+      const withdrawal = await Withdrawal.create({
+        user: req.user._id,
+        sourceWallet,
+        withdrawalCurrency: 'USDT',
+        amountUSDT: numericUSDT,
+        amountPKR: null,
+        exchangeRate: null,
+        feeUSDT,
+        payableAmountUSDT,
+        payableAmountPKR: null,
+        withdrawalAccount: withdrawalAccountId,
+        txHash: mockTxHash,
+        status: 'approved',
+        remarks: 'MOCK Sandbox USDT withdrawal processed instantly'
+      });
+
+      await WalletHistory.create({
+        user: req.user._id,
+        walletType: sourceWallet,
+        type: 'debit',
+        amount: numericUSDT,
+        previousBalance: prevBalance,
+        newBalance: wallet[sourceWallet],
+        category: 'withdrawal',
+        description: `MOCK Sandbox USDT withdrawal completed. Amount: $${numericUSDT}. Fee: $${feeUSDT.toFixed(2)}. Payout hash: ${mockTxHash}`,
+        referenceModel: 'Withdrawal',
+        referenceId: withdrawal._id
+      });
+
+      await Notification.create({
+        user: req.user._id,
+        title: 'USDT Payout Completed! ✅',
+        message: `Your mock payout of $${payableAmountUSDT.toFixed(2)} has been successfully completed. Hash: ${mockTxHash}`,
+        category: 'withdrawal'
+      });
+
+      return successResponse(res, 'MOCK Sandbox payout completed successfully', { withdrawal }, 200);
+    }
 
     // We do not support automatic USDT payouts via the REST API.
     // Create a rejected withdrawal request for record/auditing purposes

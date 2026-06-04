@@ -38,6 +38,23 @@ const userInvestmentSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  autoReinvest: {
+    type: Boolean,
+    default: true
+  },
+  pendingRoiClaim: {
+    type: Number,
+    default: 0
+  },
+  claimExpiresAt: {
+    type: Date,
+    default: null
+  },
+  roiClaimMode: {
+    type: String,
+    enum: ['auto', 'manual'],
+    default: 'auto'
+  },
   closeDate: {
     type: Date,
     default: null

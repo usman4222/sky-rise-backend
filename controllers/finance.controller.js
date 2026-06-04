@@ -13,6 +13,7 @@ import TeamBonusTransfer from '../models/rewards/team_bonus_transfer.model.js';
 import User from '../models/auth/user.model.js';
 import Notification from '../models/system/notification.model.js';
 import SystemSettings from '../models/system/system_settings.model.js';
+import UserInvestment from '../models/investment/user_investment.model.js';
 
 // Response helpers
 import { sendError, successResponse } from '../utils/response.js';
@@ -94,6 +95,10 @@ const submitDeposit = async (req, res) => {
       }
     }
 
+    if (finalAmountUSDT < 10) {
+      return sendError(res, 'Deposit failed: Minimum deposit amount allowed is $10.00 (USD value).', 400);
+    }
+
     const status = 'approved';
 
     const deposit = await Deposit.create({
@@ -171,6 +176,16 @@ const submitWithdrawal = async (req, res) => {
       );
     }
 
+    // Verify if the user has at least one active investment package first
+    const hasActiveInvestment = await UserInvestment.findOne({ user: req.user._id, status: 'active' });
+    if (!hasActiveInvestment) {
+      return sendError(
+        res,
+        'Withdrawal failed: You must have at least one active investment package to be eligible for withdrawals.',
+        400
+      );
+    }
+
     if (!mongoose.Types.ObjectId.isValid(withdrawalAccountId)) {
       return sendError(res, 'Invalid withdrawal account ID format', 400);
     }
@@ -182,7 +197,6 @@ const submitWithdrawal = async (req, res) => {
     }
 
     const allowedSourceWallets = [
-      'deposit',
       'roi',
       'referral',
       'salary',
@@ -559,7 +573,8 @@ const getWallets = async (req, res) => {
     const wallet = await Wallet.findOne({ user: req.user._id });
 
     return successResponse(res, 'Wallet balances retrieved successfully', {
-      wallets: wallet || {}
+      wallets: wallet || {},
+      wallet: wallet || {}
     });
   } catch (error) {
     console.error('getWallets error:', error);
@@ -572,12 +587,27 @@ const getWallets = async (req, res) => {
 // @access  Private
 const getLedgerHistory = async (req, res) => {
   try {
-    const history = await WalletHistory.find({ user: req.user._id }).sort({
-      createdAt: -1
-    });
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const filter = { user: req.user._id };
+    const totalItems = await WalletHistory.countDocuments(filter);
+    const totalPages = Math.ceil(totalItems / limit);
+
+    const history = await WalletHistory.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
     return successResponse(res, 'Wallet ledger history retrieved successfully', {
-      history
+      history,
+      pagination: {
+        totalItems,
+        totalPages,
+        currentPage: page,
+        limit
+      }
     });
   } catch (error) {
     console.error('getLedgerHistory error:', error);

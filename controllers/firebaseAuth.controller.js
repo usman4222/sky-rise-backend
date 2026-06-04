@@ -10,6 +10,8 @@ import Role from '../models/auth/role.model.js';
 import UserRole from '../models/auth/user_role.model.js';
 
 import { sendError, successResponse } from '../utils/response.js';
+import rewardEngine from '../utils/rewardEngine.js';
+const { payoutTeamBonusJoin } = rewardEngine;
 
 const generateReferralCode = async () => {
     let referralCode;
@@ -217,11 +219,12 @@ export const syncFirebaseUser = async (req, res) => {
         await Wallet.create({
             user: user._id,
             deposit: 0,
+            freeRegBonus: 5,
             roi: 0,
             referral: 0,
             bonusActivation: 0,
             bonusTransferable: 0,
-            bonusReceived: 5,
+            bonusReceived: 0,
             salary: 0,
             achievement: 0,
             withdrawal: 0
@@ -229,7 +232,7 @@ export const syncFirebaseUser = async (req, res) => {
 
         await WalletHistory.create({
             user: user._id,
-            walletType: 'bonusReceived',
+            walletType: 'freeRegBonus',
             type: 'credit',
             amount: 5,
             previousBalance: 0,
@@ -237,6 +240,10 @@ export const syncFirebaseUser = async (req, res) => {
             category: 'free_reg_bonus',
             description: 'Welcome promotional signup credit. Valid for first investment merge only.'
         });
+
+        if (sponsorUser) {
+            await payoutTeamBonusJoin(user._id);
+        }
 
         await SecurityLog.create({
             user: user._id,

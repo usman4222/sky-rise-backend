@@ -7,7 +7,7 @@ const testWebhook = async () => {
   const PORT = process.env.PORT || 5000;
   const CP_CLIENT_ID = (process.env.COINPAYMENTS_CLIENT_ID || 'mock_client_id').trim();
   const CP_CLIENT_SECRET = (process.env.COINPAYMENTS_CLIENT_SECRET || 'mock_client_secret').trim();
-  
+
   const txnId = process.argv[2];
   if (!txnId) {
     console.error('❌ Please provide a deposit transaction ID to approve.');
@@ -31,7 +31,7 @@ const testWebhook = async () => {
   const timestamp = new Date().toISOString().split(".")[0];
   const method = 'POST';
   const url = `http://localhost:${PORT}/api/webhooks/coinpayments`;
-  
+
   // Calculate signature: \ufeff + method + url + clientId + timestamp + bodyString
   const message = `\ufeff${method}${url}${CP_CLIENT_ID}${timestamp}${bodyString}`;
   const signature = crypto

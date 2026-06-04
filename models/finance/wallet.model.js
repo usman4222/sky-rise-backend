@@ -13,6 +13,11 @@ const walletSchema = new mongoose.Schema({
     default: 0,
     min: [0, 'Deposit balance cannot be negative']
   },
+  freeRegBonus: {
+    type: Number,
+    default: 0,
+    min: [0, 'Free registration bonus cannot be negative']
+  },
   roi: {
     type: Number,
     default: 0,

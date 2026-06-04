@@ -1,20 +1,24 @@
 import admin from 'firebase-admin';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const rawServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
 
-const serviceAccountPath = path.join(__dirname, 'firebase-service-account.json');
+console.log('Firebase env exists:', Boolean(rawServiceAccount));
 
-if (!fs.existsSync(serviceAccountPath)) {
-    throw new Error(
-        'Firebase service account file not found at config/firebase-service-account.json'
-    );
+if (!rawServiceAccount) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT env variable is missing on live server');
 }
 
-const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+let serviceAccount;
+
+try {
+    serviceAccount = JSON.parse(rawServiceAccount);
+
+    if (serviceAccount.private_key) {
+        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    }
+} catch (error) {
+    throw new Error('Invalid FIREBASE_SERVICE_ACCOUNT JSON: ' + error.message);
+}
 
 if (!admin.apps.length) {
     admin.initializeApp({

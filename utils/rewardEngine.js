@@ -23,6 +23,7 @@ import BusinessReport from '../models/network/business_report.model.js';
 import LegReport from '../models/network/leg_report.model.js';
 import Notification from '../models/system/notification.model.js';
 import BackgroundJob from '../models/system/background_job.model.js';
+import LeadershipReward from '../models/rewards/leadership_reward.model.js';
 
 /**
  * Helper to update/cache user business reports (5-level volume, total volume)
@@ -254,6 +255,75 @@ async function payoutTeamBonusJoin(joiningUserId) {
  * Triggers Daily ROI payouts & 10-level MLM team ROI splits
  * Simulates the daily cron execution
  */
+/**
+ * Helper to distribute 10-level upline MLM ROI commissions (total 31%)
+ */
+async function distributeLevelRoiCommissions(userId, payoutAmount, roiHistoryId) {
+  try {
+    const distRule = await EarningRule.findOne({ ruleName: 'level_income_distribution' });
+    const levelPercentages = distRule ? distRule.value : [8, 4, 4, 3, 2, 2, 2, 2, 2, 2];
+
+    const treeNode = await ReferralTree.findOne({ user: userId });
+    if (treeNode && treeNode.ancestors && treeNode.ancestors.length > 0) {
+      const uplineCount = Math.min(treeNode.ancestors.length, 10);
+
+      for (let levelIndex = 1; levelIndex <= uplineCount; levelIndex++) {
+        const uplineId = treeNode.ancestors[levelIndex - 1];
+
+        // Verify if upline unlocked this level
+        const unlock = await LevelUnlock.findOne({ user: uplineId, level: levelIndex });
+        if (levelIndex > 1 && !unlock) {
+          // Upline has not paid $5 activation fee for this level depth, skips commissions!
+          continue;
+        }
+
+        const percent = levelPercentages[levelIndex - 1];
+        const commissionAmount = payoutAmount * (percent / 100);
+
+        if (commissionAmount > 0) {
+          const uplineWallet = await Wallet.findOne({ user: uplineId });
+          if (uplineWallet) {
+            const prevUplineBal = uplineWallet.roi;
+            uplineWallet.roi += commissionAmount;
+            await uplineWallet.save();
+
+            // Ledger history
+            await WalletHistory.create({
+              user: uplineId,
+              walletType: 'roi',
+              type: 'credit',
+              amount: commissionAmount,
+              previousBalance: prevUplineBal,
+              newBalance: uplineWallet.roi,
+              category: 'level_roi_income',
+              description: `${percent}% Level ROI team commission from downline Level ${levelIndex} member daily payout`,
+              referenceModel: 'RoiHistory',
+              referenceId: roiHistoryId
+            });
+
+            // Log Level Income record
+            const levelLog = new LevelIncome({
+              upline: uplineId,
+              downline: userId,
+              roiHistory: roiHistoryId,
+              level: levelIndex,
+              commissionPercent: percent,
+              amount: commissionAmount
+            });
+            await levelLog.save();
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error distributing level ROI commissions:', error.message);
+  }
+}
+
+/**
+ * Triggers Daily ROI payouts & 10-level MLM team ROI splits
+ * Simulates the daily cron execution
+ */
 async function runDailyRoiPayout() {
   const jobLog = new BackgroundJob({
     jobName: 'DAILY_ROI_PAYOUT',
@@ -268,16 +338,50 @@ async function runDailyRoiPayout() {
     const activeInvestments = await UserInvestment.find({ status: 'active' }).populate('package');
     let processedCount = 0;
 
-    // Fetch level income distribution array
-    const distRule = await EarningRule.findOne({ ruleName: 'level_income_distribution' });
-    const levelPercentages = distRule ? distRule.value : [8, 4, 4, 3, 2, 2, 2, 2, 2, 2];
+    const ROI_INTERVAL_MS = process.env.ROI_TEST_MODE === 'true'
+      ? 60 * 1000 // 1 minute for testing
+      : 24 * 60 * 60 * 1000; // 24 hours for production
+
+    const claimWindowMs = process.env.ROI_TEST_MODE === 'true'
+      ? 60 * 1000 // 1 minute for testing
+      : 1 * 60 * 60 * 1000; // 1 hour for production
+
+    const now = new Date();
 
     for (const investment of activeInvestments) {
       const pkg = investment.package;
       const user = investment.user;
 
+      if (!pkg) {
+        console.warn(`⚠️ User investment ${investment._id} has no valid package associated.`);
+        continue;
+      }
+
+      // Check if previous pending manual claim has expired (missed ROI policy)
+      if (investment.pendingRoiClaim > 0 && investment.claimExpiresAt && now > new Date(investment.claimExpiresAt)) {
+        console.log(`⚠️ User investment ${investment._id} missed claiming daily ROI. Resetting pending claim.`);
+        const missedAmount = investment.pendingRoiClaim;
+        investment.pendingRoiClaim = 0;
+        investment.claimExpiresAt = null;
+        await investment.save();
+
+        await Notification.create({
+          user,
+          title: 'Daily ROI Claim Expired ⚠️',
+          message: `Your daily ROI claim of $${missedAmount.toFixed(2)} for package ${pkg.name} expired because it was not claimed within the required time window.`,
+          category: 'system'
+        });
+      }
+
+      const lastPayoutAt = investment.lastPayoutAt || investment.createdAt;
+      const msSinceLastPayout = now.getTime() - new Date(lastPayoutAt).getTime();
+      const tolerance = process.env.ROI_TEST_MODE === 'true' ? 3000 : 30000;
+      if (msSinceLastPayout < ROI_INTERVAL_MS - tolerance) {
+        continue;
+      }
+
       // Calculate days passed since purchase
-      const msPassed = new Date() - investment.createdAt;
+      const msPassed = now - investment.createdAt;
       const daysPassed = Math.floor(msPassed / (1000 * 60 * 60 * 24));
 
       // Calculate current ROI growth: starting +0.1% every 10 days up to maxRoi
@@ -296,105 +400,72 @@ async function runDailyRoiPayout() {
 
       let isCompounded = false;
 
-      // Compound (autoReinvest ON) vs manual wallet payout
-      if (pkg.autoReinvest) {
-        // Principal compounding: add payout back into active principal amount
-        investment.amount += payoutAmount;
-        isCompounded = true;
+      if (investment.roiClaimMode === 'auto') {
+        if (investment.autoReinvest) {
+          // Principal compounding: add payout back into active principal amount
+          investment.amount += payoutAmount;
+          isCompounded = true;
 
-        // ROI resets on reinvestment compounding as per requirements
-        investment.currentRoi = pkg.startRoi;
-        investment.createdAt = new Date(); // Reset days calculation benchmark to today
-        investment.lastIncrementAt = new Date();
-      } else {
-        // Manual payout to user's ROI wallet
-        const wallet = await Wallet.findOne({ user });
-        if (wallet) {
+          // ROI resets on reinvestment compounding as per requirements
+          investment.currentRoi = pkg.startRoi;
+          investment.createdAt = now;
+          investment.lastIncrementAt = now;
+        } else {
+          // Auto collect: credit user wallet directly
+          let wallet = await Wallet.findOne({ user });
+          if (!wallet) {
+            wallet = new Wallet({ user });
+          }
           const prevBalance = wallet.roi;
           wallet.roi += payoutAmount;
           await wallet.save();
 
+          // Log in WalletHistory
           await WalletHistory.create({
             user,
             walletType: 'roi',
             type: 'credit',
             amount: payoutAmount,
-            previousBalance: prevBalance,
+            previousBalance,
             newBalance: wallet.roi,
             category: 'daily_roi_income',
-            description: `Daily ROI interest credit at ${calculatedRoi}% on investment principal of $${investment.amount - payoutAmount}`,
+            description: `Auto-claimed daily ROI interest payout on investment principal of $${investment.amount}`,
             referenceModel: 'UserInvestment',
             referenceId: investment._id
           });
         }
-      }
 
-      investment.totalRoiEarned += payoutAmount;
-      investment.lastPayoutAt = new Date();
-      await investment.save();
+        investment.totalRoiEarned += payoutAmount;
+        investment.lastPayoutAt = now;
+        await investment.save();
 
-      // Log ROI Payout History
-      const roiHistory = new RoiHistory({
-        user,
-        userInvestment: investment._id,
-        amount: payoutAmount,
-        roiPercent: calculatedRoi,
-        isCompounded
-      });
-      await roiHistory.save();
+        // Log ROI Payout History
+        const roiHistory = new RoiHistory({
+          user,
+          userInvestment: investment._id,
+          amount: payoutAmount,
+          roiPercent: calculatedRoi,
+          isCompounded
+        });
+        await roiHistory.save();
 
-      // 2. Distribute 10-level Team ROI commissions (total 31%)
-      const treeNode = await ReferralTree.findOne({ user });
-      if (treeNode && treeNode.ancestors && treeNode.ancestors.length > 0) {
-        const uplineCount = Math.min(treeNode.ancestors.length, 10);
+        // Distribute 10-level Team ROI commissions immediately
+        await distributeLevelRoiCommissions(user, payoutAmount, roiHistory._id);
 
-        for (let levelIndex = 1; levelIndex <= uplineCount; levelIndex++) {
-          const uplineId = treeNode.ancestors[levelIndex - 1];
+      } else {
+        // Manual claim option: store as pending claim with 1-hour expiration window (1 minute in test mode)
+        investment.pendingRoiClaim = payoutAmount;
+        investment.claimExpiresAt = new Date(now.getTime() + claimWindowMs);
+        investment.lastPayoutAt = now;
+        await investment.save();
 
-          // Verify if upline unlocked this level
-          const unlock = await LevelUnlock.findOne({ user: uplineId, level: levelIndex });
-          if (levelIndex > 1 && !unlock) {
-            // Upline has not paid $5 activation fee for this level depth, skips commissions!
-            continue;
-          }
-
-          const percent = levelPercentages[levelIndex - 1];
-          const commissionAmount = payoutAmount * (percent / 100);
-
-          if (commissionAmount > 0) {
-            const uplineWallet = await Wallet.findOne({ user: uplineId });
-            if (uplineWallet) {
-              const prevUplineBal = uplineWallet.roi;
-              uplineWallet.roi += commissionAmount;
-              await uplineWallet.save();
-
-              // Ledger history
-              await WalletHistory.create({
-                user: uplineId,
-                walletType: 'roi',
-                type: 'credit',
-                amount: commissionAmount,
-                previousBalance: prevUplineBal,
-                newBalance: uplineWallet.roi,
-                category: 'level_roi_income',
-                description: `${percent}% Level ROI team commission from downline Level ${levelIndex} member daily payout`,
-                referenceModel: 'RoiHistory',
-                referenceId: roiHistory._id
-              });
-
-              // Log Level Income record
-              const levelLog = new LevelIncome({
-                upline: uplineId,
-                downline: user,
-                roiHistory: roiHistory._id,
-                level: levelIndex,
-                commissionPercent: percent,
-                amount: commissionAmount
-              });
-              await levelLog.save();
-            }
-          }
-        }
+        // Notify user that ROI is ready to claim
+        await Notification.create({
+          user,
+          title: 'Daily ROI Ready to Claim 💰',
+          message: `Your daily ROI payout of $${payoutAmount.toFixed(2)} for ${pkg.name} is ready. Please claim it within the next ${process.env.ROI_TEST_MODE === 'true' ? '1 minute' : '1 hour'}.`,
+          category: 'commission'
+        });
       }
 
       processedCount++;
@@ -584,58 +655,11 @@ async function runWeeklyVipSalaryPayout() {
         { upsert: true }
       );
 
-      // Award weekly salary if qualified
-      if (qualifiedRank > 0 && salaryAmount > 0) {
-        let wallet = await Wallet.findOne({ user: userId });
-        if (!wallet) {
-          wallet = new Wallet({ user: userId });
-        }
-
-        const prevBal = wallet.salary;
-        wallet.salary += salaryAmount;
-        await wallet.save();
-
-        // Payout log entry
-        const salaryLog = new VipSalary({
-          user: userId,
-          vipRank: qualifiedRank,
-          amount: salaryAmount,
-          payoutPeriodStart: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // 7 days ago
-          payoutPeriodEnd: new Date()
-        });
-        await salaryLog.save();
-
-        // Ledger audit
-        const history = await WalletHistory.create({
-          user: userId,
-          walletType: 'salary',
-          type: 'credit',
-          amount: salaryAmount,
-          previousBalance: prevBal,
-          newBalance: wallet.salary,
-          category: 'weekly_salary',
-          description: `VIP Rank ${qualifiedRank} weekly fixed salary leadership payout`,
-          referenceModel: 'VipSalary',
-          referenceId: salaryLog._id
-        });
-
-        salaryLog.walletHistoryRef = history._id;
-        await salaryLog.save();
-
-        // Update user vipRank state
+      // Update user's vipRank status based on qualification, do not auto-credit wallet (Option A)
+      if (qualifiedRank > 0) {
         await User.findByIdAndUpdate(userId, { vipRank: qualifiedRank });
-
-        // Notify user
-        await Notification.create({
-          user: userId,
-          title: `👑 VIP Weekly Salary Paid`,
-          message: `Your weekly salary of $${salaryAmount} for achieving VIP Rank ${qualifiedRank} has been credited to your wallet.`,
-          category: 'rank'
-        });
-
         processedCount++;
       } else {
-        // Reset rank state if lost qualifications
         await User.findByIdAndUpdate(userId, { vipRank: 0 });
       }
     }
@@ -655,11 +679,109 @@ async function runWeeklyVipSalaryPayout() {
   }
 }
 
+/**
+ * Payouts Five Upline Team Leadership Rewards on investment package purchase.
+ * Level 1: Starter Leadership Reward (5%)
+ * Level 2: Growth Leadership Reward (3%)
+ * Level 3: Achievement Leadership Reward (2%)
+ * Level 4: Elite Leadership Reward (1.5%)
+ * Level 5: Global Investor Reward (1.0%)
+ */
+async function payoutLeadershipRewards(userId, realAmountPaid, userInvestmentId) {
+  try {
+    if (realAmountPaid <= 0) return;
+
+    // Get referral tree details for the investing user
+    const treeNode = await ReferralTree.findOne({ user: userId });
+    if (!treeNode || !treeNode.ancestors || treeNode.ancestors.length === 0) return;
+
+    const rewardSpecs = [
+      { name: 'Starter Leadership Reward', percent: 5 },
+      { name: 'Growth Leadership Reward', percent: 3 },
+      { name: 'Achievement Leadership Reward', percent: 2 },
+      { name: 'Elite Leadership Reward', percent: 1.5 },
+      { name: 'Global Investor Reward', percent: 1 }
+    ];
+
+    const levelsToPayout = Math.min(treeNode.ancestors.length, 5);
+
+    for (let depth = 1; depth <= levelsToPayout; depth++) {
+      const uplineId = treeNode.ancestors[depth - 1];
+      const spec = rewardSpecs[depth - 1];
+
+      // Verify upline user exists and is active
+      const uplineUser = await User.findById(uplineId);
+      if (!uplineUser || uplineUser.status !== 'active') continue;
+
+      // Verify upline has at least one active investment package to be eligible for rewards
+      const hasActiveInvestment = await UserInvestment.findOne({ user: uplineId, status: 'active' });
+      if (!hasActiveInvestment) continue;
+
+      const rewardAmount = realAmountPaid * (spec.percent / 100);
+      if (rewardAmount <= 0) continue;
+
+      // Fetch or initialize upline's wallet
+      let wallet = await Wallet.findOne({ user: uplineId });
+      if (!wallet) {
+        wallet = new Wallet({ user: uplineId });
+      }
+
+      // Credit to referral wallet
+      const prevBal = wallet.referral;
+      wallet.referral += rewardAmount;
+      await wallet.save();
+
+      // Log in WalletHistory
+      const history = new WalletHistory({
+        user: uplineId,
+        walletType: 'referral',
+        type: 'credit',
+        amount: rewardAmount,
+        previousBalance: prevBal,
+        newBalance: wallet.referral,
+        category: 'referral',
+        description: `MLM Level ${depth} ${spec.name} from downline investment. Real amount paid: $${realAmountPaid}`,
+        referenceModel: 'LeadershipReward',
+        referenceId: null // will be updated below
+      });
+      await history.save();
+
+      // Save Leadership Reward record
+      const leadershipReward = new LeadershipReward({
+        user: uplineId,
+        downlineUser: userId,
+        userInvestment: userInvestmentId,
+        rewardName: spec.name,
+        amount: rewardAmount
+      });
+      await leadershipReward.save();
+
+      // Update reference ID in history
+      history.referenceId = leadershipReward._id;
+      await history.save();
+
+      // Send notification
+      await Notification.create({
+        user: uplineId,
+        title: `🏆 ${spec.name} Payout`,
+        message: `You have received $${rewardAmount.toFixed(2)} (${spec.percent}%) as ${spec.name} from your level ${depth} downline.`,
+        category: 'commission'
+      });
+
+      console.log(`🎁 Paid $${rewardAmount} ${spec.name} to upline ${uplineId} (Level ${depth})`);
+    }
+  } catch (error) {
+    console.error('Error in payoutLeadershipRewards:', error.message);
+  }
+}
+
 export default {
   updateBusinessReport,
   payoutDirectReferral,
   payoutTeamBonusJoin,
   runDailyRoiPayout,
   checkAchievementRewards,
-  runWeeklyVipSalaryPayout
+  runWeeklyVipSalaryPayout,
+  payoutLeadershipRewards,
+  distributeLevelRoiCommissions
 };

@@ -15,7 +15,7 @@ import UserRole from '../models/auth/user_role.model.js';
 
 // Reward triggers
 import rewardEngine from '../utils/rewardEngine.js';
-const { payoutDirectReferral, checkAchievementRewards } = rewardEngine;
+const { payoutDirectReferral, checkAchievementRewards, payoutLeadershipRewards } = rewardEngine;
 
 // Response helpers
 import { sendError, successResponse } from '../utils/response.js';
@@ -56,7 +56,8 @@ const purchasePackage = async (req, res) => {
       amount,
       amountInvested: amountInvestedFromBody,
       useBonus: useBonusFromBody,
-      useSignupBonus
+      useSignupBonus,
+      roiClaimMode
     } = req.body;
 
     if (!packageId) {
@@ -83,6 +84,9 @@ const purchasePackage = async (req, res) => {
       useBonusFromBody !== undefined
         ? useBonusFromBody === true || useBonusFromBody === 'true'
         : useSignupBonus === true || useSignupBonus === 'true';
+
+    // Validate roiClaimMode
+    const claimMode = (roiClaimMode === 'manual' || roiClaimMode === 'auto') ? roiClaimMode : 'auto';
 
     // 1. Fetch package rules
     const pkg = await InvestmentPackage.findById(packageId);
@@ -220,9 +224,7 @@ const purchasePackage = async (req, res) => {
 
     // 3. Create active investment (Starts at the End of the Day)
     const totalPrincipalSize = amountInvested + freeRegBonusPaid;
-    
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
+    const roiStartTime = new Date();
 
     const userInvestment = new UserInvestment({
       user: req.user._id,
@@ -230,8 +232,9 @@ const purchasePackage = async (req, res) => {
       amount: totalPrincipalSize,
       status: 'active',
       currentRoi: pkg.startRoi,
-      lastIncrementAt: endOfDay,
-      lastPayoutAt: endOfDay
+      lastIncrementAt: roiStartTime,
+      lastPayoutAt: roiStartTime,
+      roiClaimMode: claimMode
     });
 
     await userInvestment.save();
@@ -252,6 +255,12 @@ const purchasePackage = async (req, res) => {
     if (treeNode && treeNode.referredBy) {
       await payoutDirectReferral(
         treeNode.referredBy,
+        req.user._id,
+        realAmountPaid,
+        userInvestment._id
+      );
+
+      await payoutLeadershipRewards(
         req.user._id,
         realAmountPaid,
         userInvestment._id
@@ -289,11 +298,66 @@ const purchasePackage = async (req, res) => {
 // @access  Private
 const getMyInvestments = async (req, res) => {
   try {
-    const investments = await UserInvestment.find({ user: req.user._id })
-      .populate('package')
-      .sort({ createdAt: -1 });
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
 
-    return successResponse(res, 'My investments retrieved successfully', { investments });
+    const filter = { user: req.user._id };
+    const totalItems = await UserInvestment.countDocuments(filter);
+    const totalPages = Math.ceil(totalItems / limit);
+
+    const investments = await UserInvestment.find(filter)
+      .populate('package')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const intervalMs = process.env.ROI_TEST_MODE === 'true'
+      ? 60 * 1000 // 1 minute
+      : 24 * 60 * 60 * 1000; // 24 hours
+
+    const processedInvestments = await Promise.all(investments.map(async (inv) => {
+      if (inv.status === 'active') {
+        const now = new Date();
+        // Check real-time expiration
+        if (inv.pendingRoiClaim > 0 && inv.claimExpiresAt && now > new Date(inv.claimExpiresAt)) {
+          const missedAmount = inv.pendingRoiClaim;
+          await UserInvestment.updateOne(
+            { _id: inv._id },
+            { $set: { pendingRoiClaim: 0, claimExpiresAt: null } }
+          );
+          
+          await Notification.create({
+            user: req.user._id,
+            title: 'Daily ROI Claim Expired ⚠️',
+            message: `Your daily ROI claim of $${missedAmount.toFixed(2)} for package ${inv.package?.name || ''} expired because it was not claimed within the required time window.`,
+            category: 'system'
+          });
+
+          inv.pendingRoiClaim = 0;
+          inv.claimExpiresAt = null;
+        }
+
+        const lastPayout = inv.lastPayoutAt || inv.createdAt;
+        const nextRoiPayoutAt = new Date(new Date(lastPayout).getTime() + intervalMs);
+        return {
+          ...inv,
+          nextRoiPayoutAt
+        };
+      }
+      return inv;
+    }));
+
+    return successResponse(res, 'My investments retrieved successfully', {
+      investments: processedInvestments,
+      pagination: {
+        totalItems,
+        totalPages,
+        currentPage: page,
+        limit
+      }
+    });
   } catch (error) {
     console.error('getMyInvestments error:', error.message);
     return sendError(res, 'Internal investments listing error', 500);
@@ -412,19 +476,135 @@ const withdrawCapital = async (req, res) => {
 
 const getRoiHistory = async (req, res) => {
   try {
-    const roiHistory = await RoiHistory.find({ user: req.user._id })
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const filter = { user: req.user._id };
+    const totalItems = await RoiHistory.countDocuments(filter);
+    const totalPages = Math.ceil(totalItems / limit);
+
+    const roiHistory = await RoiHistory.find(filter)
       .populate({
         path: 'userInvestment',
         populate: { path: 'package' }
       })
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
     return successResponse(res, 'ROI payout history retrieved successfully', {
-      roiHistory
+      roiHistory,
+      pagination: {
+        totalItems,
+        totalPages,
+        currentPage: page,
+        limit
+      }
     });
   } catch (error) {
     console.error('getRoiHistory error:', error);
     return sendError(res, 'Failed to fetch ROI history records', 500, error);
+  }
+};
+
+const toggleAutoReinvest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return sendError(res, 'Invalid investment ID format', 400);
+    }
+    const investment = await UserInvestment.findOne({ _id: id, user: req.user._id, status: 'active' });
+    if (!investment) {
+      return sendError(res, 'Active investment not found', 404);
+    }
+    investment.autoReinvest = !investment.autoReinvest;
+    await investment.save();
+    return successResponse(res, `Auto-reinvestment has been successfully turned ${investment.autoReinvest ? 'ON' : 'OFF'}.`, {
+      investment
+    });
+  } catch (error) {
+    console.error('toggleAutoReinvest error:', error);
+    return sendError(res, 'Failed to toggle auto-reinvest setting', 500, error);
+  }
+};
+
+const claimDailyRoi = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return sendError(res, 'Invalid investment ID format', 400);
+    }
+    const investment = await UserInvestment.findOne({ _id: id, user: req.user._id, status: 'active' });
+    if (!investment) {
+      return sendError(res, 'Active investment not found', 404);
+    }
+    if (investment.pendingRoiClaim <= 0) {
+      return sendError(res, 'No pending ROI available to claim for this investment.', 400);
+    }
+    // Check if the claim window has expired
+    if (investment.claimExpiresAt && new Date() > investment.claimExpiresAt) {
+      // Missed ROI reset logic: clean it up
+      investment.pendingRoiClaim = 0;
+      investment.claimExpiresAt = null;
+      await investment.save();
+      return sendError(res, 'This daily ROI claim window has expired (1 hour missed ROI policy).', 400);
+    }
+
+    const payoutAmount = investment.pendingRoiClaim;
+
+    // Credit to user's ROI wallet
+    const wallet = await Wallet.findOne({ user: req.user._id });
+    if (!wallet) {
+      return sendError(res, 'User wallet balances not initialized', 400);
+    }
+
+    const prevBalance = wallet.roi;
+    wallet.roi += payoutAmount;
+    await wallet.save();
+
+    // Log to WalletHistory
+    await WalletHistory.create({
+      user: req.user._id,
+      walletType: 'roi',
+      type: 'credit',
+      amount: payoutAmount,
+      previousBalance: prevBalance,
+      newBalance: wallet.roi,
+      category: 'daily_roi_income',
+      description: `Manually claimed daily ROI interest payout on investment principal of $${investment.amount}`,
+      referenceModel: 'UserInvestment',
+      referenceId: investment._id
+    });
+
+    // Increment total ROI earned
+    investment.totalRoiEarned += payoutAmount;
+
+    // Reset pending claim
+    investment.pendingRoiClaim = 0;
+    investment.claimExpiresAt = null;
+    await investment.save();
+
+    // Log ROI Payout History
+    const roiHistory = new RoiHistory({
+      user: req.user._id,
+      userInvestment: investment._id,
+      amount: payoutAmount,
+      roiPercent: investment.currentRoi,
+      isCompounded: false
+    });
+    await roiHistory.save();
+
+    // Distribute MLM level commissions (total 31% over 10 levels)
+    await rewardEngine.distributeLevelRoiCommissions(req.user._id, payoutAmount, roiHistory._id);
+
+    return successResponse(res, `Successfully claimed $${payoutAmount.toFixed(2)} ROI into your ROI wallet!`, {
+      wallet,
+      investment
+    });
+  } catch (error) {
+    console.error('claimDailyRoi error:', error);
+    return sendError(res, 'Failed to claim daily ROI', 500, error);
   }
 };
 
@@ -433,5 +613,7 @@ export default {
   purchasePackage,
   getMyInvestments,
   withdrawCapital,
-  getRoiHistory
+  getRoiHistory,
+  toggleAutoReinvest,
+  claimDailyRoi
 };

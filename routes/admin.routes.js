@@ -1,6 +1,17 @@
 import express from 'express';
 import adminController from '../controllers/admin.controller.js';
 import adminPaymentController from '../controllers/adminPayment.controller.js';
+import {
+  listWeeklySalaryRequests,
+  getWeeklySalaryRequest,
+  approveWeeklySalaryRequest,
+  rejectWeeklySalaryRequest,
+  listWithdrawalRequests,
+  getWithdrawalRequest,
+  approveWithdrawalRequest,
+  rejectWithdrawalRequest,
+  markPaidWithdrawalRequest
+} from '../controllers/admin_actions.controller.js';
 
 import { firebaseProtect } from '../middleware/firebaseAuth.js';
 import { restrictTo } from '../middleware/rbac.js';
@@ -42,10 +53,29 @@ router.get('/deposits', adminMiddleware, adminController.getAdminDeposits);
 router.post('/deposits/:id/action', adminMiddleware, processDeposit);
 
 // ===============================
-// Withdrawal Management (Legacy)
+// Weekly Salary Management
 // ===============================
-router.get('/withdrawals', adminMiddleware, adminController.getAdminWithdrawals);
-router.post('/withdrawals/:id/action', adminMiddleware, processWithdrawal);
+router.get('/weekly-salary/requests', adminMiddleware, listWeeklySalaryRequests);
+router.get('/weekly-salary/requests/:id', adminMiddleware, getWeeklySalaryRequest);
+router.patch('/weekly-salary/requests/:id/approve', adminMiddleware, approveWeeklySalaryRequest);
+router.patch('/weekly-salary/requests/:id/reject', adminMiddleware, rejectWeeklySalaryRequest);
+
+// ===============================
+// Withdrawal Request Management (New System)
+// ===============================
+router.get('/withdrawals', adminMiddleware, listWithdrawalRequests);
+router.get('/withdrawals/:id', adminMiddleware, getWithdrawalRequest);
+router.patch('/withdrawals/:id/approve', adminMiddleware, approveWithdrawalRequest);
+router.patch('/withdrawals/:id/reject', adminMiddleware, rejectWithdrawalRequest);
+router.patch('/withdrawals/:id/mark-paid', adminMiddleware, markPaidWithdrawalRequest);
+
+// ===============================
+// User Management
+// ===============================
+router.get('/users', adminMiddleware, adminController.listUsers);
+router.get('/users/:id', adminMiddleware, adminController.getUserDetail);
+router.post('/users/:id/suspend', adminMiddleware, adminController.suspendUser);
+router.post('/users/:id/activate', adminMiddleware, adminController.activateUser);
 
 // ===============================
 // KYC Management

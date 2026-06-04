@@ -3,12 +3,17 @@ import Withdrawal from '../models/finance/withdrawal.model.js';
 import Wallet from '../models/finance/wallet.model.js';
 import WalletHistory from '../models/finance/wallet_history.model.js';
 import PaymentMethod from '../models/finance/payment_method.model.js';
+import WeeklySalaryRequest from '../models/finance/weekly_salary_request.model.js';
+import WithdrawalRequest from '../models/finance/withdrawal_request.model.js';
 
 import KycRecord from '../models/auth/kyc_record.model.js';
 import User from '../models/auth/user.model.js';
 
 import InvestmentPackage from '../models/investment/investment_package.model.js';
 import ExchangeRate from '../models/investment/exchange_rate.model.js';
+import BusinessReport from '../models/network/business_report.model.js';
+import LegReport from '../models/network/leg_report.model.js';
+import UserInvestment from '../models/investment/user_investment.model.js';
 
 import AdminLog from '../models/system/admin_log.model.js';
 import Notification from '../models/system/notification.model.js';
@@ -66,98 +71,11 @@ const validatePackagePayload = (pkg) => {
 // @route   POST /api/admin/deposits/:id/action
 // @access  Admin only
 const processDeposit = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { action, remarks } = req.body;
-
-    if (!action || !['approve', 'reject'].includes(action)) {
-      return sendError(res, 'Invalid action. Must be approve or reject.', 400);
-    }
-
-    const deposit = await Deposit.findById(id);
-
-    if (!deposit || deposit.status !== 'pending') {
-      return sendError(res, 'Deposit request not found or already processed', 400);
-    }
-
-    const userId = deposit.user;
-
-    if (action === 'approve') {
-      deposit.status = 'approved';
-      deposit.remarks = remarks || 'Approved by system finance administration';
-      deposit.processedBy = req.user._id;
-      deposit.processedAt = new Date();
-      await deposit.save();
-
-      let wallet = await Wallet.findOne({ user: userId });
-
-      if (!wallet) {
-        wallet = new Wallet({ user: userId });
-      }
-
-      const prevBal = wallet.deposit || 0;
-      wallet.deposit = prevBal + deposit.amountUSDT;
-      await wallet.save();
-
-      await WalletHistory.create({
-        user: userId,
-        walletType: 'deposit',
-        type: 'credit',
-        amount: deposit.amountUSDT,
-        previousBalance: prevBal,
-        newBalance: wallet.deposit,
-        category: 'deposit',
-        description: `Deposit slip Rs. ${deposit.amountPKR} approved. $${deposit.amountUSDT.toFixed(2)} cash credited. Receipt ID: ${deposit.transactionId}`,
-        referenceModel: 'Deposit',
-        referenceId: deposit._id
-      });
-
-      await AdminLog.create({
-        admin: req.user._id,
-        action: 'APPROVE_DEPOSIT',
-        targetModel: 'Deposit',
-        targetId: deposit._id,
-        newData: { status: 'approved' },
-        ipAddress: req.ip || '127.0.0.1'
-      });
-
-      await Notification.create({
-        user: userId,
-        title: 'Deposit Approved! 💰',
-        message: `Your deposit of Rs. ${deposit.amountPKR} ($${deposit.amountUSDT.toFixed(2)}) has been approved and credited to your deposit wallet.`,
-        category: 'deposit'
-      });
-
-      return successResponse(res, 'Deposit approved and wallets funded successfully!');
-    }
-
-    deposit.status = 'rejected';
-    deposit.remarks = remarks || 'Rejected: Invalid deposit verification screenshot or incorrect receipt details';
-    deposit.processedBy = req.user._id;
-    deposit.processedAt = new Date();
-    await deposit.save();
-
-    await AdminLog.create({
-      admin: req.user._id,
-      action: 'REJECT_DEPOSIT',
-      targetModel: 'Deposit',
-      targetId: deposit._id,
-      newData: { status: 'rejected', remarks: deposit.remarks },
-      ipAddress: req.ip || '127.0.0.1'
-    });
-
-    await Notification.create({
-      user: userId,
-      title: 'Deposit Slip Rejected ❌',
-      message: `Your deposit slip (Tx: ${deposit.transactionId}) was rejected. Remarks: ${deposit.remarks}`,
-      category: 'deposit'
-    });
-
-    return successResponse(res, 'Deposit slip rejected successfully.');
-  } catch (error) {
-    console.error('processDeposit error:', error);
-    return sendError(res, 'Internal admin deposit processing error', 500, error);
-  }
+  return sendError(
+    res,
+    'Manual deposit approval is disabled. Deposits are automatically processed via integrated payment gateway webhooks (PayFast / CoinPayments).',
+    400
+  );
 };
 
 // @desc    Approve or Reject withdrawal request
@@ -776,15 +694,36 @@ const getAdminDashboard = async (req, res) => {
 
     const totalDeposited = depositsApproved[0] ? depositsApproved[0].total : 0;
 
+    // Legacy withdrawal stat
     const withdrawalsApproved = await Withdrawal.aggregate([
       { $match: { status: 'approved' } },
       { $group: { _id: null, total: { $sum: '$payableAmountUSDT' } } }
     ]);
+    const legacyWithdrawn = withdrawalsApproved[0] ? withdrawalsApproved[0].total : 0;
 
-    const totalWithdrawn = withdrawalsApproved[0] ? withdrawalsApproved[0].total : 0;
+    // New withdrawal requests stats
+    const paidWithdrawalsAgg = await WithdrawalRequest.aggregate([
+      { $match: { status: 'paid' } },
+      { $group: { _id: null, total: { $sum: '$amountRequested' } } }
+    ]);
+    const totalPaidWithdrawals = paidWithdrawalsAgg[0] ? paidWithdrawalsAgg[0].total : 0;
+
+    const pendingWithdrawalsAgg = await WithdrawalRequest.aggregate([
+      { $match: { status: 'pending' } },
+      { $group: { _id: null, total: { $sum: '$amountRequested' } } }
+    ]);
+    const totalPendingWithdrawalAmount = pendingWithdrawalsAgg[0] ? pendingWithdrawalsAgg[0].total : 0;
+
+    // Salary requests stats
+    const salaryRequestsAgg = await WeeklySalaryRequest.aggregate([
+      { $match: { status: { $in: ['approved', 'credited'] } } },
+      { $group: { _id: null, total: { $sum: '$salaryAmount' } } }
+    ]);
+    const totalApprovedSalaryAmount = salaryRequestsAgg[0] ? salaryRequestsAgg[0].total : 0;
 
     const pendingDeposits = await Deposit.countDocuments({ status: 'pending' });
-    const pendingWithdrawals = await Withdrawal.countDocuments({ status: 'pending' });
+    const pendingWithdrawals = await WithdrawalRequest.countDocuments({ status: 'pending' });
+    const pendingWeeklySalaryRequests = await WeeklySalaryRequest.countDocuments({ status: 'pending' });
     const pendingKyc = await KycRecord.countDocuments({ status: 'pending' });
 
     const packagesCount = await InvestmentPackage.countDocuments({});
@@ -799,9 +738,13 @@ const getAdminDashboard = async (req, res) => {
       stats: {
         usersCount,
         totalDeposited,
-        totalWithdrawn,
+        totalWithdrawn: legacyWithdrawn + totalPaidWithdrawals,
+        totalPaidWithdrawalAmount: totalPaidWithdrawals,
+        totalPendingWithdrawalAmount,
+        totalApprovedSalaryAmount,
         pendingDeposits,
         pendingWithdrawals,
+        pendingWeeklySalaryRequests,
         pendingKyc,
         packagesCount,
         activePackagesCount,
@@ -820,9 +763,29 @@ const getAdminDashboard = async (req, res) => {
 // @access  Admin only
 const getAdminDeposits = async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
     const filter = req.query.status ? { status: req.query.status } : {};
-    const deposits = await Deposit.find(filter).populate('user', 'name email').sort({ createdAt: -1 });
-    return successResponse(res, 'Deposits retrieved', { deposits });
+    const totalItems = await Deposit.countDocuments(filter);
+    const totalPages = Math.ceil(totalItems / limit);
+
+    const deposits = await Deposit.find(filter)
+      .populate('user', 'name email')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    return successResponse(res, 'Deposits retrieved', {
+      deposits,
+      pagination: {
+        totalItems,
+        totalPages,
+        currentPage: page,
+        limit
+      }
+    });
   } catch (error) {
     return sendError(res, 'Failed to get deposits', 500, error);
   }
@@ -846,11 +809,128 @@ const getAdminWithdrawals = async (req, res) => {
 // @access  Admin only
 const getAdminKyc = async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
     const filter = req.query.status ? { status: req.query.status } : {};
-    const kycRecords = await KycRecord.find(filter).populate('user', 'name email').sort({ createdAt: -1 });
-    return successResponse(res, 'KYC records retrieved', { kycRecords });
+    const totalItems = await KycRecord.countDocuments(filter);
+    const totalPages = Math.ceil(totalItems / limit);
+
+    const kycRecords = await KycRecord.find(filter)
+      .populate('user', 'name email')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    return successResponse(res, 'KYC records retrieved', {
+      kycRecords,
+      pagination: {
+        totalItems,
+        totalPages,
+        currentPage: page,
+        limit
+      }
+    });
   } catch (error) {
     return sendError(res, 'Failed to get KYC records', 500, error);
+  }
+};
+
+const listUsers = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+    const search = req.query.search || '';
+
+    let filter = {};
+    if (search) {
+      filter = {
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } },
+          { referralCode: { $regex: search, $options: 'i' } }
+        ]
+      };
+    }
+
+    const totalItems = await User.countDocuments(filter);
+    const totalPages = Math.ceil(totalItems / limit);
+
+    const users = await User.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select('-firebaseUid');
+
+    return successResponse(res, 'Users retrieved successfully', {
+      users,
+      pagination: {
+        totalItems,
+        totalPages,
+        currentPage: page,
+        limit
+      }
+    });
+  } catch (error) {
+    return sendError(res, 'Failed to retrieve users', 500, error);
+  }
+};
+
+const getUserDetail = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const userObj = await User.findById(id).populate('sponsor', 'name email referralCode');
+    if (!userObj) {
+      return sendError(res, 'User not found', 404);
+    }
+
+    const wallet = await Wallet.findOne({ user: id }) || {};
+    const businessReport = await BusinessReport.findOne({ user: id }) || {};
+    const legs = await LegReport.find({ user: id }).populate('legUser', 'name email referralCode');
+    const investments = await UserInvestment.find({ user: id }).populate('package', 'name');
+    const deposits = await Deposit.find({ user: id }).sort({ createdAt: -1 }).limit(5);
+    const withdrawals = await Withdrawal.find({ user: id }).sort({ createdAt: -1 }).limit(5);
+
+    return successResponse(res, 'User details retrieved successfully', {
+      user: userObj,
+      wallet,
+      businessReport,
+      legs,
+      investments,
+      recentDeposits: deposits,
+      recentWithdrawals: withdrawals
+    });
+  } catch (error) {
+    return sendError(res, 'Failed to retrieve user details', 500, error);
+  }
+};
+
+const suspendUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userObj = await User.findByIdAndUpdate(id, { status: 'suspended' }, { new: true });
+    if (!userObj) {
+      return sendError(res, 'User not found', 404);
+    }
+    return successResponse(res, 'User suspended successfully', { user: userObj });
+  } catch (error) {
+    return sendError(res, 'Failed to suspend user', 500, error);
+  }
+};
+
+const activateUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userObj = await User.findByIdAndUpdate(id, { status: 'active' }, { new: true });
+    if (!userObj) {
+      return sendError(res, 'User not found', 404);
+    }
+    return successResponse(res, 'User activated successfully', { user: userObj });
+  } catch (error) {
+    return sendError(res, 'Failed to activate user', 500, error);
   }
 };
 
@@ -870,5 +950,10 @@ export default {
   getAdminDashboard,
   getAdminDeposits,
   getAdminWithdrawals,
-  getAdminKyc
+  getAdminKyc,
+
+  listUsers,
+  getUserDetail,
+  suspendUser,
+  activateUser
 };
