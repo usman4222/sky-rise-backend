@@ -284,6 +284,7 @@ const login = async (req, res) => {
         name: user.name,
         email: user.email,
         referralCode: user.referralCode,
+        imageUrl: user.imageUrl || null,
         kycStatus: user.kycStatus
       }
     });
@@ -345,6 +346,7 @@ const getProfile = async (req, res) => {
         phone: user.phone,
         referralCode: user.referralCode,
         sponsorName,
+        imageUrl: user.imageUrl || null,
         kycStatus: user.kycStatus,
         status: user.status,
         teamBonusDeadline: user.teamBonusDeadline,

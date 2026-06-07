@@ -55,7 +55,11 @@ const userSchema = new mongoose.Schema({
 
   vipRank: { type: Number, default: 0 },
 
-  achievementRank: { type: Number, default: 0 }
+  achievementRank: { type: Number, default: 0 },
+
+  imageUrl: { type: String, default: null },
+
+  imagePublicId: { type: String, default: null }
 
 }, { timestamps: true, collection: 'users' });
 

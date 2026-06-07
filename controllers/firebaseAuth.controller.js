@@ -75,19 +75,29 @@ const buildFirebaseUserResponse = async (user) => {
     const signupBonusAmount =
         signupBonusHistory?.amount || wallet?.bonusReceived || 0;
 
+    let sponsorCode = null;
+    if (user.sponsor) {
+        const sponsorUser = await User.findById(user.sponsor);
+        if (sponsorUser) {
+            sponsorCode = sponsorUser.referralCode;
+        }
+    }
+
     return {
         id: user._id,
         firebaseUid: user.firebaseUid,
         name: user.name,
         email: user.email,
         phone: user.phone,
+        imageUrl: user.imageUrl || null,
         referralCode: user.referralCode,
-        sponsor: user.sponsor,
+        sponsor: sponsorCode,
         kycStatus: user.kycStatus,
         status: user.status,
         unlockedLevels: user.unlockedLevels || [1],
         vipRank: user.vipRank || 0,
         achievementRank: user.achievementRank || 0,
+        createdAt: user.createdAt,
 
         role: roles[0] || 'USER',
         roles: roles.length ? roles : ['USER'],
@@ -290,6 +300,14 @@ export const getFirebaseProfile = async (req, res) => {
         const signupBonusAmount =
             signupBonusHistory?.amount || wallet?.bonusReceived || 0;
 
+        let sponsorCode = null;
+        if (user.sponsor) {
+            const sponsorUser = await User.findById(user.sponsor);
+            if (sponsorUser) {
+                sponsorCode = sponsorUser.referralCode;
+            }
+        }
+
         return successResponse(res, 'Firebase protected profile fetched successfully', {
             user: {
                 id: user._id,
@@ -297,13 +315,15 @@ export const getFirebaseProfile = async (req, res) => {
                 name: user.name,
                 email: user.email,
                 phone: user.phone,
+                imageUrl: user.imageUrl || null,
                 referralCode: user.referralCode,
-                sponsor: user.sponsor,
+                sponsor: sponsorCode,
                 kycStatus: user.kycStatus,
                 status: user.status,
                 unlockedLevels: user.unlockedLevels || [1],
                 vipRank: user.vipRank || 0,
                 achievementRank: user.achievementRank || 0,
+                createdAt: user.createdAt,
 
                 role: roles[0] || 'USER',
                 roles: roles.length ? roles : ['USER'],
