@@ -22,6 +22,11 @@ const uploadConfig = multer({
 }).single('image');
 
 export const uploadImageMiddleware = (req, res, next) => {
+  const contentType = req.headers['content-type'] || '';
+  if (!contentType.includes('multipart/form-data')) {
+    return next();
+  }
+
   uploadConfig(req, res, (err) => {
     if (err) {
       console.error('Multer upload error:', err.message);

@@ -20,6 +20,7 @@ import paymentMethodRoutes from './routes/payment_method.routes.js';
 import weeklySalaryRoutes from './routes/weekly_salary.routes.js';
 import withdrawalRoutes from './routes/withdrawal.routes.js';
 import uploadRoutes from './routes/upload.routes.js';
+import bannerRoutes from './routes/banner.routes.js';
 
 // Group 1: Identity & RBAC
 import User from './models/auth/user.model.js';
@@ -76,6 +77,7 @@ import SupportTicket from './models/system/support_ticket.model.js';
 import Announcement from './models/system/announcement.model.js';
 import WebsitePage from './models/system/website_page.model.js';
 import UploadedImage from './models/system/uploaded_image.model.js';
+import Banner from './models/system/banner.model.js';
 
 
 const app = express();
@@ -161,7 +163,8 @@ const compiledModels = {
     SupportTicket,
     Announcement,
     WebsitePage,
-    UploadedImage
+    UploadedImage,
+    Banner
   }
 };
 
@@ -214,6 +217,7 @@ app.use('/api/payment-methods', paymentMethodRoutes);
 app.use('/api/weekly-salary', weeklySalaryRoutes);
 app.use('/api/withdrawals', withdrawalRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/banners', bannerRoutes);
 
 // Dedicated CoinPayments webhook endpoint (matches CoinPayments dashboard config)
 import webhookController from './controllers/webhook.controller.js';
