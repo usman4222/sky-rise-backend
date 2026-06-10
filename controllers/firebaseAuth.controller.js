@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
 
 import admin from '../config/firebase.js';
 import User from '../models/auth/user.model.js';
@@ -8,6 +9,7 @@ import ReferralTree from '../models/network/referral_tree.model.js';
 import SecurityLog from '../models/auth/security_log.model.js';
 import Role from '../models/auth/role.model.js';
 import UserRole from '../models/auth/user_role.model.js';
+import Otp from '../models/auth/otp.model.js';
 
 import { sendError, successResponse } from '../utils/response.js';
 import rewardEngine from '../utils/rewardEngine.js';
@@ -102,6 +104,10 @@ const buildFirebaseUserResponse = async (user) => {
         role: roles[0] || 'USER',
         roles: roles.length ? roles : ['USER'],
 
+        // Registration bonus state (used by frontend for bonus banner & modal)
+        registrationBonusActive: user.registrationBonusActive !== false, // default true for new users
+        freeRegBonus: wallet?.freeRegBonus || 0,
+
         signupBonus: {
             credited: signupBonusAmount > 0,
             amount: signupBonusAmount,
@@ -119,6 +125,7 @@ const buildFirebaseUserResponse = async (user) => {
             bonusActivation: wallet?.bonusActivation || 0,
             bonusTransferable: wallet?.bonusTransferable || 0,
             bonusReceived: wallet?.bonusReceived || 0,
+            freeRegBonus: wallet?.freeRegBonus || 0,
             salary: wallet?.salary || 0,
             achievement: wallet?.achievement || 0,
             withdrawal: wallet?.withdrawal || 0
@@ -126,9 +133,129 @@ const buildFirebaseUserResponse = async (user) => {
     };
 };
 
+export const sendOtp = async (req, res) => {
+    try {
+        const { phone, email } = req.body;
+
+        if (!phone) {
+            return sendError(res, 'Phone number is required', 400);
+        }
+
+        // 1. Validate phone and email are not already registered
+        const existingPhone = await User.findOne({ phone: phone.trim() });
+        if (existingPhone) {
+            return sendError(res, 'Phone number is already registered', 400);
+        }
+
+        if (email) {
+            const existingEmail = await User.findOne({ email: email.trim().toLowerCase() });
+            if (existingEmail) {
+                return sendError(res, 'Email address is already registered', 400);
+            }
+        }
+
+        // 2. Generate a 6-digit numeric OTP
+        const code = Math.floor(100000 + Math.random() * 900000).toString();
+
+        // 3. Clear previous OTPs for this phone number
+        await Otp.deleteMany({ phone: phone.trim() });
+
+        // 4. Save new OTP to DB (expires in 5 minutes)
+        const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+        const otpRecord = new Otp({
+            phone: phone.trim(),
+            code,
+            expiresAt
+        });
+        await otpRecord.save();
+
+        // 5. "Send" the OTP by logging it to the console
+        console.log(`
+==================================================
+[SMS OTP GATEWAY MOCK]
+Sending verification code: ${code}
+To phone number: ${phone}
+Expires at: ${expiresAt.toLocaleString()}
+==================================================
+`);
+
+        const isDev = process.env.NODE_ENV !== 'production';
+        return successResponse(res, 'Verification code sent successfully', {
+            ...(isDev && { devOtp: code })
+        });
+    } catch (error) {
+        console.error('Send OTP error:', error);
+        return sendError(res, 'Failed to send OTP verification code', 500, error);
+    }
+};
+
+export const verifyOtp = async (req, res) => {
+    try {
+        const { phone, code } = req.body;
+
+        if (!phone || !code) {
+            return sendError(res, 'Phone number and verification code are required', 400);
+        }
+
+        // Find the latest active OTP record for this phone
+        const otpRecord = await Otp.findOne({ phone: phone.trim() }).sort({ createdAt: -1 });
+
+        if (!otpRecord) {
+            return sendError(res, 'No OTP code was generated for this phone number', 400);
+        }
+
+        if (otpRecord.expiresAt < new Date()) {
+            return sendError(res, 'Verification code has expired. Please request a new one.', 400);
+        }
+
+        if (otpRecord.code !== code.trim()) {
+            return sendError(res, 'Invalid verification code. Please check and try again.', 400);
+        }
+
+        // Mark OTP as verified so it cannot be reused (or delete it)
+        otpRecord.isVerified = true;
+        await otpRecord.save();
+
+        // Generate signed token representing verified phone number
+        const tokenPayload = {
+            phone: phone.trim(),
+            verified: true
+        };
+        const phoneVerificationToken = jwt.sign(
+            tokenPayload,
+            process.env.JWT_SECRET || 'skyrise_future_super_secure_jwt_token_key_2026',
+            { expiresIn: '15m' }
+        );
+
+        return successResponse(res, 'Phone number verified successfully', {
+            phoneVerificationToken
+        });
+    } catch (error) {
+        console.error('Verify OTP error:', error);
+        return sendError(res, 'Failed to verify OTP code', 500, error);
+    }
+};
+
 export const syncFirebaseUser = async (req, res) => {
     try {
-        const { idToken, name, phone, sponsorCode } = req.body;
+        const { idToken, name, phone, sponsorCode, phoneVerificationToken } = req.body;
+
+        if (!phoneVerificationToken) {
+            return sendError(res, 'Phone verification token is required to complete registration', 400);
+        }
+
+        try {
+            const decoded = jwt.verify(
+                phoneVerificationToken,
+                process.env.JWT_SECRET || 'skyrise_future_super_secure_jwt_token_key_2026'
+            );
+            if (!decoded || decoded.phone !== phone || !decoded.verified) {
+                return sendError(res, 'Invalid or expired phone verification token', 400);
+            }
+        } catch (jwtErr) {
+            console.error('Phone verification token validation failed:', jwtErr);
+            return sendError(res, 'Phone verification token has expired or is invalid. Please verify your phone number again.', 400);
+        }
 
         if (!idToken) {
             return sendError(res, 'Firebase ID token is required', 400);
@@ -328,6 +455,10 @@ export const getFirebaseProfile = async (req, res) => {
                 role: roles[0] || 'USER',
                 roles: roles.length ? roles : ['USER'],
 
+                // Registration bonus state
+                registrationBonusActive: user.registrationBonusActive !== false,
+                freeRegBonus: wallet?.freeRegBonus || 0,
+
                 signupBonus: {
                     credited: signupBonusAmount > 0,
                     amount: signupBonusAmount,
@@ -345,6 +476,7 @@ export const getFirebaseProfile = async (req, res) => {
                     bonusActivation: wallet?.bonusActivation || 0,
                     bonusTransferable: wallet?.bonusTransferable || 0,
                     bonusReceived: wallet?.bonusReceived || 0,
+                    freeRegBonus: wallet?.freeRegBonus || 0,
                     salary: wallet?.salary || 0,
                     achievement: wallet?.achievement || 0,
                     withdrawal: wallet?.withdrawal || 0

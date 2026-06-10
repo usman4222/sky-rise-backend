@@ -134,9 +134,10 @@ const purchasePackage = async (req, res) => {
     let teamBonusReceivedPaid = 0;
 
     // RULE 1: First investment merge signup bonus check
+    // Only applies when: bonus is still active, wallet has the $5, AND investment amount >= $50
     const userProfile = await User.findById(req.user._id);
 
-    if (userProfile?.registrationBonusActive && wallet.freeRegBonus >= 5) {
+    if (userProfile?.registrationBonusActive && wallet.freeRegBonus >= 5 && amountInvested >= 50) {
       freeRegBonusPaid = 5;
       bonusAmountPaid += 5;
 
@@ -155,9 +156,10 @@ const purchasePackage = async (req, res) => {
         previousBalance: prevRegBal,
         newBalance: wallet.freeRegBonus,
         category: 'investment_purchase',
-        description: 'Merged $5 Free signup bonus with first package purchase'
+        description: 'Auto-merged $5 Free Registration Bonus with first eligible investment ($50+)'
       });
     }
+    // NOTE: If investment < $50, bonus remains active for the next eligible investment
 
     // RULE 2: Bonus usage
     if (useBonus && wallet.bonusReceived > 0) {

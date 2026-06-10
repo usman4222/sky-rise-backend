@@ -9,6 +9,7 @@ import WalletHistory from '../models/finance/wallet_history.model.js';
 import UserInvestment from '../models/investment/user_investment.model.js';
 import Notification from '../models/system/notification.model.js';
 import EarningRule from '../models/rewards/earning_rule.model.js';
+import Withdrawal from '../models/finance/withdrawal.model.js';
 
 // Standardized responses
 import { sendError, successResponse } from '../utils/response.js';
@@ -45,25 +46,103 @@ const getDownline = async (req, res) => {
     const node = await ReferralTree.findOne({ user: req.user._id });
 
     // Count how many directs have active investments dynamically
-    const directUserIds = directs.map(d => d.user._id);
+    const directUserIds = directs.map(d => d.user?._id).filter(Boolean);
     const activeDirects = await UserInvestment.distinct('user', {
       user: { $in: directUserIds },
       status: 'active'
     });
     const activeDirectsCount = activeDirects.length;
 
+    // 2. Fetch all downline tree nodes where user is in ancestors list
+    const downlineTreeNodes = await ReferralTree.find({ ancestors: req.user._id })
+      .populate('user');
+
+    const downlineUserIds = downlineTreeNodes.map(d => d.user?._id).filter(Boolean);
+
+    // Fetch active investments for all downline users
+    const investments = await UserInvestment.find({
+      user: { $in: downlineUserIds },
+      status: 'active'
+    });
+
+    // Fetch approved withdrawals for all downline users
+    const withdrawals = await Withdrawal.find({
+      user: { $in: downlineUserIds },
+      status: 'approved'
+    });
+
+    // Group investments by user
+    const investmentsByUser = {};
+    investments.forEach(inv => {
+      if (inv.user) {
+        const uId = inv.user.toString();
+        investmentsByUser[uId] = (investmentsByUser[uId] || 0) + inv.amount;
+      }
+    });
+
+    // Group withdrawals by user
+    const withdrawalsByUser = {};
+    withdrawals.forEach(w => {
+      if (w.user) {
+        const uId = w.user.toString();
+        withdrawalsByUser[uId] = (withdrawalsByUser[uId] || 0) + w.amountUSDT;
+      }
+    });
+
+    // Construct level list mapping: levels 1 to 10
+    const levelTeamData = {};
+    for (let i = 1; i <= 10; i++) {
+      levelTeamData[i] = [];
+    }
+
+    downlineTreeNodes.forEach(node => {
+      if (!node.user) return;
+      const idx = node.ancestors.indexOf(req.user._id);
+      if (idx !== -1) {
+        const level = idx + 1;
+        if (level >= 1 && level <= 10) {
+          const uId = node.user._id.toString();
+          const totalInvestments = investmentsByUser[uId] || 0;
+          const totalWithdrawals = withdrawalsByUser[uId] || 0;
+          const isActiveUser = totalInvestments > 0;
+
+          levelTeamData[level].push({
+            id: node.user._id,
+            name: node.user.name,
+            email: node.user.email,
+            status: node.user.status,
+            isActiveUser,
+            totalInvestments,
+            totalWithdrawals,
+            joinedAt: node.createdAt
+          });
+        }
+      }
+    });
+
     return successResponse(res, 'Downlines retrieved successfully', {
       directReferralsCount: node ? node.directReferralsCount : 0,
       activeDirectReferralsCount: activeDirectsCount,
       totalTeamSize: node ? node.teamSize : 0,
-      directReferralsList: directs.map(d => ({
-        id: d.user._id,
-        name: d.user.name,
-        email: d.user.email,
-        kycStatus: d.user.kycStatus,
-        status: d.user.status,
-        joinedAt: d.createdAt
-      }))
+      levelTeamData,
+      directReferralsList: directs.map(d => {
+        if (!d.user) return null;
+        const uId = d.user._id.toString();
+        const totalInvestments = investmentsByUser[uId] || 0;
+        const totalWithdrawals = withdrawalsByUser[uId] || 0;
+        const isActiveUser = totalInvestments > 0;
+        return {
+          id: d.user._id,
+          name: d.user.name,
+          email: d.user.email,
+          kycStatus: d.user.kycStatus,
+          status: d.user.status,
+          isActiveUser,
+          totalInvestments,
+          totalWithdrawals,
+          joinedAt: d.createdAt
+        };
+      }).filter(Boolean)
     });
   } catch (error) {
     console.error('getDownline error:', error.message);

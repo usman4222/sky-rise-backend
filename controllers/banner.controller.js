@@ -49,29 +49,33 @@ export const getBanners = async (req, res) => {
 
 export const createBanner = async (req, res) => {
   try {
-    if (!req.file) {
-      return sendError(res, 'No banner image file provided', 400);
+    const { title, link, order, isActive, imageUrl } = req.body;
+    let finalImageUrl = imageUrl;
+    let publicId = '';
+
+    if (req.file) {
+      let cloudinaryResult;
+      try {
+        cloudinaryResult = await streamUpload(req.file.buffer);
+        finalImageUrl = cloudinaryResult.secure_url;
+        publicId = cloudinaryResult.public_id;
+      } catch (uploadError) {
+        console.error('Cloudinary upload error for banner:', uploadError);
+        return sendError(res, 'Failed to upload image to Cloudinary', 500, uploadError);
+      }
     }
 
-    const { title, link, order, isActive } = req.body;
-
-    let cloudinaryResult;
-    try {
-      cloudinaryResult = await streamUpload(req.file.buffer);
-    } catch (uploadError) {
-      console.error('Cloudinary upload error for banner:', uploadError);
-      return sendError(res, 'Failed to upload image to Cloudinary', 500, uploadError);
+    if (!finalImageUrl) {
+      return sendError(res, 'No banner image file or direct image URL provided', 400);
     }
-
-    const { secure_url, public_id } = cloudinaryResult;
 
     const banner = await Banner.create({
-      imageUrl: secure_url,
-      publicId: public_id,
+      imageUrl: finalImageUrl,
+      publicId: publicId,
       title: title || '',
       link: link || '',
       order: order ? parseInt(order, 10) : 0,
-      isActive: isActive === 'false' ? false : true
+      isActive: String(isActive) === 'false' ? false : true
     });
 
     return successResponse(res, 'Banner created successfully', { banner }, 201);
@@ -84,7 +88,7 @@ export const createBanner = async (req, res) => {
 export const updateBanner = async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, link, order, isActive } = req.body;
+    const { title, link, order, isActive, imageUrl } = req.body;
 
     const banner = await Banner.findById(id);
     if (!banner) {
@@ -113,6 +117,17 @@ export const updateBanner = async (req, res) => {
 
       banner.imageUrl = cloudinaryResult.secure_url;
       banner.publicId = cloudinaryResult.public_id;
+    } else if (imageUrl !== undefined && imageUrl !== banner.imageUrl) {
+      // If direct image URL is provided and it is different, delete old Cloudinary image
+      if (banner.publicId) {
+        try {
+          await cloudinary.uploader.destroy(banner.publicId);
+        } catch (destroyError) {
+          console.warn('Failed to delete old image from Cloudinary:', destroyError.message);
+        }
+      }
+      banner.imageUrl = imageUrl;
+      banner.publicId = '';
     }
 
     if (title !== undefined) banner.title = title;

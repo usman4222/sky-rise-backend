@@ -8,7 +8,7 @@ const bannerSchema = new mongoose.Schema(
     },
     publicId: {
       type: String,
-      required: true
+      required: false
     },
     title: {
       type: String,

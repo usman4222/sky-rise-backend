@@ -327,7 +327,7 @@ const createUsdtDeposit = async (req, res) => {
       method = await PaymentMethod.findOne({ gateway: 'coinpayments' });
       if (!method) {
         method = await PaymentMethod.create({
-          name: 'CoinPayments USDT Deposit',
+          name: 'CoinPayment USDT Deposit',
           type: 'crypto',
           currency: 'USDT',
           gateway: 'coinpayments',
