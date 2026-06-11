@@ -344,7 +344,7 @@ async function runDailyRoiPayout() {
 
     const claimWindowMs = process.env.ROI_TEST_MODE === 'true'
       ? 60 * 1000 // 1 minute for testing
-      : 1 * 60 * 60 * 1000; // 1 hour for production
+      : 6 * 60 * 60 * 1000; // 6 hours for production
 
     const now = new Date();
 
@@ -453,7 +453,7 @@ async function runDailyRoiPayout() {
         await distributeLevelRoiCommissions(user, payoutAmount, roiHistory._id);
 
       } else {
-        // Manual claim option: store as pending claim with 1-hour expiration window (1 minute in test mode)
+        // Manual claim option: store as pending claim with 6-hour expiration window (1 minute in test mode)
         investment.pendingRoiClaim = payoutAmount;
         investment.claimExpiresAt = new Date(now.getTime() + claimWindowMs);
         investment.lastPayoutAt = now;
@@ -463,7 +463,7 @@ async function runDailyRoiPayout() {
         await Notification.create({
           user,
           title: 'Daily ROI Ready to Claim 💰',
-          message: `Your daily ROI payout of $${payoutAmount.toFixed(2)} for ${pkg.name} is ready. Please claim it within the next ${process.env.ROI_TEST_MODE === 'true' ? '1 minute' : '1 hour'}.`,
+          message: `Your daily ROI payout of $${payoutAmount.toFixed(2)} for ${pkg.name} is ready. Please claim it within the next ${process.env.ROI_TEST_MODE === 'true' ? '1 minute' : '6 hours'}.`,
           category: 'commission'
         });
       }

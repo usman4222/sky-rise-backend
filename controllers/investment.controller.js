@@ -550,7 +550,7 @@ const claimDailyRoi = async (req, res) => {
       investment.pendingRoiClaim = 0;
       investment.claimExpiresAt = null;
       await investment.save();
-      return sendError(res, 'This daily ROI claim window has expired (1 hour missed ROI policy).', 400);
+      return sendError(res, 'This daily ROI claim window has expired (6 hours missed ROI policy).', 400);
     }
 
     const payoutAmount = investment.pendingRoiClaim;
