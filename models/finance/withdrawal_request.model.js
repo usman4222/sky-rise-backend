@@ -74,6 +74,11 @@ const withdrawalRequestSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'WalletHistory',
     default: null
+  },
+  isAdminFundedUser: {
+    type: Boolean,
+    default: false,
+    index: true
   }
 }, {
   timestamps: true,

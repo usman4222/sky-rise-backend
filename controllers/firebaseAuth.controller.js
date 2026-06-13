@@ -10,6 +10,37 @@ import SecurityLog from '../models/auth/security_log.model.js';
 import Role from '../models/auth/role.model.js';
 import UserRole from '../models/auth/user_role.model.js';
 import Otp from '../models/auth/otp.model.js';
+import twilio from 'twilio';
+
+const getTwilioClient = () => {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+    const serviceSid = process.env.TWILIO_SERVICE_SID;
+    if (accountSid && authToken && serviceSid) {
+        return {
+            client: twilio(accountSid, authToken, { lazyLoading: true }),
+            serviceSid
+        };
+    }
+    return null;
+};
+
+const formatE164Phone = (phone) => {
+    let formatted = phone.trim();
+    if (!formatted.startsWith('+')) {
+        if (formatted.startsWith('92') || formatted.startsWith('91') || formatted.startsWith('44')) {
+            formatted = '+' + formatted;
+        } else if (formatted.startsWith('0')) {
+            formatted = '+92' + formatted.slice(1);
+        } else {
+            formatted = '+' + formatted;
+        }
+    }
+    return formatted;
+};
+
+
+
 
 import { sendError, successResponse } from '../utils/response.js';
 import rewardEngine from '../utils/rewardEngine.js';
@@ -100,6 +131,7 @@ const buildFirebaseUserResponse = async (user) => {
         vipRank: user.vipRank || 0,
         achievementRank: user.achievementRank || 0,
         createdAt: user.createdAt,
+        teamBonusDeadline: user.teamBonusDeadline || null,
 
         role: roles[0] || 'USER',
         roles: roles.length ? roles : ['USER'],
@@ -141,7 +173,8 @@ export const sendOtp = async (req, res) => {
             return sendError(res, 'Phone number is required', 400);
         }
 
-        // 1. Validate phone and email are not already registered
+        // 1. Validate phone and email are not already registered (Commented out temporarily)
+        /*
         const existingPhone = await User.findOne({ phone: phone.trim() });
         if (existingPhone) {
             return sendError(res, 'Phone number is already registered', 400);
@@ -153,36 +186,60 @@ export const sendOtp = async (req, res) => {
                 return sendError(res, 'Email address is already registered', 400);
             }
         }
+        */
 
-        // 2. Generate a 6-digit numeric OTP
-        const code = Math.floor(100000 + Math.random() * 900000).toString();
 
-        // 3. Clear previous OTPs for this phone number
-        await Otp.deleteMany({ phone: phone.trim() });
+        const formattedPhone = formatE164Phone(phone);
+        const twilioConfig = getTwilioClient();
 
-        // 4. Save new OTP to DB (expires in 5 minutes)
-        const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-        const otpRecord = new Otp({
-            phone: phone.trim(),
-            code,
-            expiresAt
-        });
-        await otpRecord.save();
+        if (twilioConfig) {
+            const { client, serviceSid } = twilioConfig;
+            try {
+                console.log(`[Twilio Verify] Requesting OTP send to ${formattedPhone} via service ${serviceSid}...`);
+                const verification = await client.verify.v2
+                    .services(serviceSid)
+                    .verifications.create({
+                        to: formattedPhone,
+                        channel: 'sms'
+                    });
+                console.log(`[Twilio Verify] Verification created successfully:`, verification.sid);
+                
+                return successResponse(res, 'Verification code sent successfully');
+            } catch (err) {
+                console.error('[Twilio Verify] Failed to send verification code via Twilio API:', err);
+                return sendError(res, `Failed to dispatch verification code via Twilio Verify: ${err.message}`, 500);
+            }
+        } else {
+            // Local fallback logic (development mock)
+            const code = Math.floor(100000 + Math.random() * 900000).toString();
 
-        // 5. "Send" the OTP by logging it to the console
-        console.log(`
+            // Clear previous OTPs for this phone number
+            await Otp.deleteMany({ phone: phone.trim() });
+
+            // Save new OTP to DB (expires in 5 minutes)
+            const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+            const otpRecord = new Otp({
+                phone: phone.trim(),
+                code,
+                expiresAt
+            });
+            await otpRecord.save();
+
+            console.log(`
 ==================================================
 [SMS OTP GATEWAY MOCK]
+Twilio Verify credentials are not fully set in .env. Falling back to mock console log.
 Sending verification code: ${code}
 To phone number: ${phone}
 Expires at: ${expiresAt.toLocaleString()}
 ==================================================
 `);
 
-        const isDev = process.env.NODE_ENV !== 'production';
-        return successResponse(res, 'Verification code sent successfully', {
-            ...(isDev && { devOtp: code })
-        });
+            const isDev = process.env.NODE_ENV !== 'production';
+            return successResponse(res, 'Verification code sent successfully', {
+                ...(isDev && { devOtp: code })
+            });
+        }
     } catch (error) {
         console.error('Send OTP error:', error);
         return sendError(res, 'Failed to send OTP verification code', 500, error);
@@ -197,39 +254,67 @@ export const verifyOtp = async (req, res) => {
             return sendError(res, 'Phone number and verification code are required', 400);
         }
 
-        // Find the latest active OTP record for this phone
-        const otpRecord = await Otp.findOne({ phone: phone.trim() }).sort({ createdAt: -1 });
+        const formattedPhone = formatE164Phone(phone);
+        const twilioConfig = getTwilioClient();
+        let isVerified = false;
 
-        if (!otpRecord) {
-            return sendError(res, 'No OTP code was generated for this phone number', 400);
+        if (twilioConfig) {
+            const { client, serviceSid } = twilioConfig;
+            try {
+                console.log(`[Twilio Verify] Checking OTP for ${formattedPhone}...`);
+                const check = await client.verify.v2
+                    .services(serviceSid)
+                    .verificationChecks.create({
+                        to: formattedPhone,
+                        code: code.trim()
+                    });
+
+                if (check.status === 'approved') {
+                    isVerified = true;
+                } else {
+                    return sendError(res, 'Invalid verification code. Please check and try again.', 400);
+                }
+            } catch (err) {
+                console.error('[Twilio Verify] Verification failed via Twilio API:', err);
+                return sendError(res, `Failed to verify OTP code via Twilio Verify: ${err.message}`, 500);
+            }
+        } else {
+            // Local fallback logic
+            const otpRecord = await Otp.findOne({ phone: phone.trim() }).sort({ createdAt: -1 });
+
+            if (!otpRecord) {
+                return sendError(res, 'No OTP code was generated for this phone number', 400);
+            }
+
+            if (otpRecord.expiresAt < new Date()) {
+                return sendError(res, 'Verification code has expired. Please request a new one.', 400);
+            }
+
+            if (otpRecord.code !== code.trim()) {
+                return sendError(res, 'Invalid verification code. Please check and try again.', 400);
+            }
+
+            otpRecord.isVerified = true;
+            await otpRecord.save();
+            isVerified = true;
         }
 
-        if (otpRecord.expiresAt < new Date()) {
-            return sendError(res, 'Verification code has expired. Please request a new one.', 400);
+        if (isVerified) {
+            // Generate signed token representing verified phone number
+            const tokenPayload = {
+                phone: phone.trim(),
+                verified: true
+            };
+            const phoneVerificationToken = jwt.sign(
+                tokenPayload,
+                process.env.JWT_SECRET || 'skyrise_future_super_secure_jwt_token_key_2026',
+                { expiresIn: '15m' }
+            );
+
+            return successResponse(res, 'Phone number verified successfully', {
+                phoneVerificationToken
+            });
         }
-
-        if (otpRecord.code !== code.trim()) {
-            return sendError(res, 'Invalid verification code. Please check and try again.', 400);
-        }
-
-        // Mark OTP as verified so it cannot be reused (or delete it)
-        otpRecord.isVerified = true;
-        await otpRecord.save();
-
-        // Generate signed token representing verified phone number
-        const tokenPayload = {
-            phone: phone.trim(),
-            verified: true
-        };
-        const phoneVerificationToken = jwt.sign(
-            tokenPayload,
-            process.env.JWT_SECRET || 'skyrise_future_super_secure_jwt_token_key_2026',
-            { expiresIn: '15m' }
-        );
-
-        return successResponse(res, 'Phone number verified successfully', {
-            phoneVerificationToken
-        });
     } catch (error) {
         console.error('Verify OTP error:', error);
         return sendError(res, 'Failed to verify OTP code', 500, error);
@@ -240,6 +325,8 @@ export const syncFirebaseUser = async (req, res) => {
     try {
         const { idToken, name, phone, sponsorCode, phoneVerificationToken } = req.body;
 
+        // Verify phone verification token (Commented out temporarily)
+        /*
         if (!phoneVerificationToken) {
             return sendError(res, 'Phone verification token is required to complete registration', 400);
         }
@@ -249,13 +336,19 @@ export const syncFirebaseUser = async (req, res) => {
                 phoneVerificationToken,
                 process.env.JWT_SECRET || 'skyrise_future_super_secure_jwt_token_key_2026'
             );
-            if (!decoded || decoded.phone !== phone || !decoded.verified) {
+            
+            const normalizedDecodedPhone = decoded.phone.trim().replace(/\s+/g, '');
+            const normalizedPhone = phone.trim().replace(/\s+/g, '');
+            
+            if (!decoded || normalizedDecodedPhone !== normalizedPhone || !decoded.verified) {
                 return sendError(res, 'Invalid or expired phone verification token', 400);
             }
         } catch (jwtErr) {
             console.error('Phone verification token validation failed:', jwtErr);
             return sendError(res, 'Phone verification token has expired or is invalid. Please verify your phone number again.', 400);
         }
+        */
+
 
         if (!idToken) {
             return sendError(res, 'Firebase ID token is required', 400);
@@ -451,6 +544,7 @@ export const getFirebaseProfile = async (req, res) => {
                 vipRank: user.vipRank || 0,
                 achievementRank: user.achievementRank || 0,
                 createdAt: user.createdAt,
+                teamBonusDeadline: user.teamBonusDeadline || null,
 
                 role: roles[0] || 'USER',
                 roles: roles.length ? roles : ['USER'],

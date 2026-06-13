@@ -10,7 +10,9 @@ import {
   getWithdrawalRequest,
   approveWithdrawalRequest,
   rejectWithdrawalRequest,
-  markPaidWithdrawalRequest
+  markPaidWithdrawalRequest,
+  adjustUserBalance,
+  getAdminBalanceHistory
 } from '../controllers/admin_actions.controller.js';
 
 import { firebaseProtect } from '../middleware/firebaseAuth.js';
@@ -76,6 +78,8 @@ router.get('/users', adminMiddleware, adminController.listUsers);
 router.get('/users/:id', adminMiddleware, adminController.getUserDetail);
 router.post('/users/:id/suspend', adminMiddleware, adminController.suspendUser);
 router.post('/users/:id/activate', adminMiddleware, adminController.activateUser);
+router.post('/users/:id/balance/adjust', adminMiddleware, adjustUserBalance);
+router.get('/balance/history', adminMiddleware, getAdminBalanceHistory);
 
 // ===============================
 // KYC Management

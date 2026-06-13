@@ -55,6 +55,12 @@ const userInvestmentSchema = new mongoose.Schema({
     enum: ['auto', 'manual'],
     default: 'auto'
   },
+  packageType: {
+    type: String,
+    enum: ['Standard', 'Admin Funded Package'],
+    default: 'Standard',
+    index: true
+  },
   closeDate: {
     type: Date,
     default: null

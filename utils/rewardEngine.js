@@ -30,8 +30,12 @@ import LeadershipReward from '../models/rewards/leadership_reward.model.js';
  */
 async function updateBusinessReport(userId) {
   try {
-    // 1. Get user own investment
-    const activeInvestments = await UserInvestment.find({ user: userId, status: 'active' });
+    // 1. Get user own investment (exclude Admin Funded Packages)
+    const activeInvestments = await UserInvestment.find({
+      user: userId,
+      status: 'active',
+      packageType: { $ne: 'Admin Funded Package' }
+    });
     const selfInvestment = activeInvestments.reduce((sum, inv) => sum + inv.amount, 0);
 
     // 2. Fetch all descendants in the referral tree
@@ -42,10 +46,11 @@ async function updateBusinessReport(userId) {
     let totalTeamBusiness = 0;
     let directBusiness = 0;
 
-    // Fetch active investments of descendants
+    // Fetch active investments of descendants (exclude Admin Funded Packages)
     const descendantInvestments = await UserInvestment.find({
       user: { $in: descendantIds },
-      status: 'active'
+      status: 'active',
+      packageType: { $ne: 'Admin Funded Package' }
     }).populate('user');
 
     // Get immediate referrals
@@ -93,6 +98,13 @@ async function updateBusinessReport(userId) {
 async function payoutDirectReferral(referredByUserId, referredUserId, realAmountPaid, userInvestmentId) {
   try {
     if (!referredByUserId) return;
+
+    // Check if the investment is an Admin Funded Package
+    const investment = await UserInvestment.findById(userInvestmentId);
+    if (investment && investment.packageType === 'Admin Funded Package') {
+      console.log(`💰 Direct Referral bypassed for Admin Funded Package: ${userInvestmentId}`);
+      return;
+    }
 
     // Fetch direct referral commission percent
     const rule = await EarningRule.findOne({ ruleName: 'direct_referral_percent' });
@@ -260,6 +272,13 @@ async function payoutTeamBonusJoin(joiningUserId) {
  */
 async function distributeLevelRoiCommissions(userId, payoutAmount, roiHistoryId) {
   try {
+    // Check if the investment is an Admin Funded Package
+    const roiHistory = await RoiHistory.findById(roiHistoryId).populate('userInvestment');
+    if (roiHistory && roiHistory.userInvestment && roiHistory.userInvestment.packageType === 'Admin Funded Package') {
+      console.log(`💰 Level ROI commissions bypassed for Admin Funded Package.`);
+      return;
+    }
+
     const distRule = await EarningRule.findOne({ ruleName: 'level_income_distribution' });
     const levelPercentages = distRule ? distRule.value : [8, 4, 4, 3, 2, 2, 2, 2, 2, 2];
 
@@ -400,40 +419,15 @@ async function runDailyRoiPayout() {
 
       let isCompounded = false;
 
-      if (investment.roiClaimMode === 'auto') {
-        if (investment.autoReinvest) {
-          // Principal compounding: add payout back into active principal amount
-          investment.amount += payoutAmount;
-          isCompounded = true;
+      if (investment.autoReinvest) {
+        // Principal compounding: add payout back into active principal amount
+        investment.amount += payoutAmount;
+        isCompounded = true;
 
-          // ROI resets on reinvestment compounding as per requirements
-          investment.currentRoi = pkg.startRoi;
-          investment.createdAt = now;
-          investment.lastIncrementAt = now;
-        } else {
-          // Auto collect: credit user wallet directly
-          let wallet = await Wallet.findOne({ user });
-          if (!wallet) {
-            wallet = new Wallet({ user });
-          }
-          const prevBalance = wallet.roi;
-          wallet.roi += payoutAmount;
-          await wallet.save();
-
-          // Log in WalletHistory
-          await WalletHistory.create({
-            user,
-            walletType: 'roi',
-            type: 'credit',
-            amount: payoutAmount,
-            previousBalance,
-            newBalance: wallet.roi,
-            category: 'daily_roi_income',
-            description: `Auto-claimed daily ROI interest payout on investment principal of $${investment.amount}`,
-            referenceModel: 'UserInvestment',
-            referenceId: investment._id
-          });
-        }
+        // ROI resets on reinvestment compounding as per requirements
+        investment.currentRoi = pkg.startRoi;
+        investment.createdAt = now;
+        investment.lastIncrementAt = now;
 
         investment.totalRoiEarned += payoutAmount;
         investment.lastPayoutAt = now;
@@ -456,6 +450,7 @@ async function runDailyRoiPayout() {
         // Manual claim option: store as pending claim with 6-hour expiration window (1 minute in test mode)
         investment.pendingRoiClaim = payoutAmount;
         investment.claimExpiresAt = new Date(now.getTime() + claimWindowMs);
+        investment.roiClaimMode = 'manual'; // Sync logic
         investment.lastPayoutAt = now;
         await investment.save();
 
@@ -467,6 +462,7 @@ async function runDailyRoiPayout() {
           category: 'commission'
         });
       }
+
 
       processedCount++;
     }
@@ -597,8 +593,12 @@ async function runWeeklyVipSalaryPayout() {
       for (const direct of directReferrals) {
         const directId = direct.user;
 
-        // Calculate total business generated inside this leg (direct member + all their descendants)
-        const activeSelfInvestments = await UserInvestment.find({ user: directId, status: 'active' });
+        // Calculate total business generated inside this leg (direct member + all their descendants) (exclude Admin Funded Packages)
+        const activeSelfInvestments = await UserInvestment.find({
+          user: directId,
+          status: 'active',
+          packageType: { $ne: 'Admin Funded Package' }
+        });
         const legOwnerInvestment = activeSelfInvestments.reduce((sum, inv) => sum + inv.amount, 0);
 
         // Fetch all descendants inside this leg sponsor branch
@@ -607,7 +607,8 @@ async function runWeeklyVipSalaryPayout() {
 
         const downlineInvestments = await UserInvestment.find({
           user: { $in: descendantIds },
-          status: 'active'
+          status: 'active',
+          packageType: { $ne: 'Admin Funded Package' }
         });
 
         const legDownlineVolume = downlineInvestments.reduce((sum, inv) => sum + inv.amount, 0);
@@ -680,6 +681,96 @@ async function runWeeklyVipSalaryPayout() {
 }
 
 /**
+ * Calculates the qualified leadership tier (0 to 5) for a given upline user.
+ */
+async function getQualifiedLeadershipTier(uplineId) {
+  try {
+    // Exclude Admin Funded Packages from leadership tier calculations
+    const activeInvestments = await UserInvestment.find({
+      user: uplineId,
+      status: 'active',
+      packageType: { $ne: 'Admin Funded Package' }
+    });
+    if (activeInvestments.length === 0) return 0;
+
+    // Check if Auto Reinvest must remain ON (all active investments must have autoReinvest = true)
+    const allAutoReinvestOn = activeInvestments.every(inv => inv.autoReinvest === true);
+    if (!allAutoReinvestOn) return 0;
+
+    // Sum active self-investments
+    const totalSelfInvestment = activeInvestments.reduce((sum, inv) => sum + inv.amount, 0);
+
+    // Count active direct referrals
+    const directs = await ReferralTree.find({ referredBy: uplineId });
+    const directIds = directs.map(d => d.user);
+    const activeDirectIds = await UserInvestment.distinct('user', {
+      user: { $in: directIds },
+      status: 'active',
+      packageType: { $ne: 'Admin Funded Package' }
+    });
+    const activeDirectsCount = activeDirectIds.length;
+
+    // Get upline user ranks
+    const user = await User.findById(uplineId);
+    if (!user) return 0;
+    const vipRank = user.vipRank || 0;
+    const achievementRank = user.achievementRank || 0;
+
+    // Tier 5: Global Investor
+    if (
+      totalSelfInvestment >= 4000 &&
+      activeDirectsCount >= 20 &&
+      vipRank >= 3 &&
+      achievementRank >= 2
+    ) {
+      return 5;
+    }
+
+    // Tier 4: Elite Leadership
+    if (
+      totalSelfInvestment >= 3000 &&
+      activeDirectsCount >= 15 &&
+      vipRank >= 2 &&
+      achievementRank >= 2
+    ) {
+      return 4;
+    }
+
+    // Tier 3: Achievement Leadership
+    if (
+      totalSelfInvestment >= 3000 &&
+      activeDirectsCount >= 10 &&
+      vipRank >= 2 &&
+      achievementRank >= 1
+    ) {
+      return 3;
+    }
+
+    // Tier 2: Growth Leadership
+    if (
+      totalSelfInvestment >= 1000 &&
+      activeDirectsCount >= 6 &&
+      vipRank >= 1
+    ) {
+      return 2;
+    }
+
+    // Tier 1: Starter Leadership
+    if (
+      totalSelfInvestment >= 500 &&
+      activeDirectsCount >= 3
+    ) {
+      return 1;
+    }
+
+    return 0;
+  } catch (error) {
+    console.error(`Error calculating leadership tier for ${uplineId}:`, error.message);
+    return 0;
+  }
+}
+
+/**
  * Payouts Five Upline Team Leadership Rewards on investment package purchase.
  * Level 1: Starter Leadership Reward (5%)
  * Level 2: Growth Leadership Reward (3%)
@@ -690,6 +781,13 @@ async function runWeeklyVipSalaryPayout() {
 async function payoutLeadershipRewards(userId, realAmountPaid, userInvestmentId) {
   try {
     if (realAmountPaid <= 0) return;
+
+    // Check if it's Admin Funded Package
+    const investment = await UserInvestment.findById(userInvestmentId);
+    if (investment && investment.packageType === 'Admin Funded Package') {
+      console.log(`🎁 Leadership Rewards bypassed for Admin Funded Package: ${userInvestmentId}`);
+      return;
+    }
 
     // Get referral tree details for the investing user
     const treeNode = await ReferralTree.findOne({ user: userId });
@@ -713,62 +811,95 @@ async function payoutLeadershipRewards(userId, realAmountPaid, userInvestmentId)
       const uplineUser = await User.findById(uplineId);
       if (!uplineUser || uplineUser.status !== 'active') continue;
 
-      // Verify upline has at least one active investment package to be eligible for rewards
-      const hasActiveInvestment = await UserInvestment.findOne({ user: uplineId, status: 'active' });
-      if (!hasActiveInvestment) continue;
-
       const rewardAmount = realAmountPaid * (spec.percent / 100);
       if (rewardAmount <= 0) continue;
 
-      // Fetch or initialize upline's wallet
-      let wallet = await Wallet.findOne({ user: uplineId });
-      if (!wallet) {
-        wallet = new Wallet({ user: uplineId });
+      // Determine the target tier for this reward amount
+      let targetTier = 1;
+      if (rewardAmount <= 10) targetTier = 1;
+      else if (rewardAmount <= 20) targetTier = 2;
+      else if (rewardAmount <= 30) targetTier = 3;
+      else if (rewardAmount <= 40) targetTier = 4;
+      else targetTier = 5;
+
+      // Calculate upline's qualified leadership tier
+      const qualifiedTier = await getQualifiedLeadershipTier(uplineId);
+
+      if (qualifiedTier >= targetTier) {
+        // QUALIFIED: Payout immediately
+        let wallet = await Wallet.findOne({ user: uplineId });
+        if (!wallet) {
+          wallet = new Wallet({ user: uplineId });
+        }
+
+        // Credit to referral wallet
+        const prevBal = wallet.referral;
+        wallet.referral += rewardAmount;
+        await wallet.save();
+
+        // Log in WalletHistory
+        const history = new WalletHistory({
+          user: uplineId,
+          walletType: 'referral',
+          type: 'credit',
+          amount: rewardAmount,
+          previousBalance: prevBal,
+          newBalance: wallet.referral,
+          category: 'referral',
+          description: `MLM Level ${depth} ${spec.name} from downline investment. Real amount paid: $${realAmountPaid}`,
+          referenceModel: 'LeadershipReward',
+          referenceId: null
+        });
+        await history.save();
+
+        // Save Leadership Reward record
+        const leadershipReward = new LeadershipReward({
+          user: uplineId,
+          downlineUser: userId,
+          userInvestment: userInvestmentId,
+          rewardName: spec.name,
+          amount: rewardAmount,
+          status: 'paid',
+          targetTier: targetTier
+        });
+        await leadershipReward.save();
+
+        // Update reference ID in history
+        history.referenceId = leadershipReward._id;
+        await history.save();
+
+        // Send notification
+        await Notification.create({
+          user: uplineId,
+          title: `🏆 ${spec.name} Payout`,
+          message: `You have received $${rewardAmount.toFixed(2)} (${spec.percent}%) as ${spec.name} from your level ${depth} downline.`,
+          category: 'commission'
+        });
+
+        console.log(`🎁 Paid $${rewardAmount} ${spec.name} to upline ${uplineId} (Level ${depth})`);
+      } else {
+        // NOT QUALIFIED: Log as missed reward
+        const leadershipReward = new LeadershipReward({
+          user: uplineId,
+          downlineUser: userId,
+          userInvestment: userInvestmentId,
+          rewardName: spec.name,
+          amount: rewardAmount,
+          status: 'missed',
+          targetTier: targetTier
+        });
+        await leadershipReward.save();
+
+        // Send warning/missed notification
+        await Notification.create({
+          user: uplineId,
+          title: `⚠️ Missed Leadership Reward`,
+          message: `You missed a $${rewardAmount.toFixed(2)} (${spec.percent}%) ${spec.name} from your level ${depth} downline because you do not meet the Tier ${targetTier} eligibility requirements. You can recover this once you qualify.`,
+          category: 'system'
+        });
+
+        console.log(`⚠️ Missed $${rewardAmount} ${spec.name} for upline ${uplineId} (Level ${depth}) due to insufficient eligibility.`);
       }
-
-      // Credit to referral wallet
-      const prevBal = wallet.referral;
-      wallet.referral += rewardAmount;
-      await wallet.save();
-
-      // Log in WalletHistory
-      const history = new WalletHistory({
-        user: uplineId,
-        walletType: 'referral',
-        type: 'credit',
-        amount: rewardAmount,
-        previousBalance: prevBal,
-        newBalance: wallet.referral,
-        category: 'referral',
-        description: `MLM Level ${depth} ${spec.name} from downline investment. Real amount paid: $${realAmountPaid}`,
-        referenceModel: 'LeadershipReward',
-        referenceId: null // will be updated below
-      });
-      await history.save();
-
-      // Save Leadership Reward record
-      const leadershipReward = new LeadershipReward({
-        user: uplineId,
-        downlineUser: userId,
-        userInvestment: userInvestmentId,
-        rewardName: spec.name,
-        amount: rewardAmount
-      });
-      await leadershipReward.save();
-
-      // Update reference ID in history
-      history.referenceId = leadershipReward._id;
-      await history.save();
-
-      // Send notification
-      await Notification.create({
-        user: uplineId,
-        title: `🏆 ${spec.name} Payout`,
-        message: `You have received $${rewardAmount.toFixed(2)} (${spec.percent}%) as ${spec.name} from your level ${depth} downline.`,
-        category: 'commission'
-      });
-
-      console.log(`🎁 Paid $${rewardAmount} ${spec.name} to upline ${uplineId} (Level ${depth})`);
     }
   } catch (error) {
     console.error('Error in payoutLeadershipRewards:', error.message);
@@ -783,5 +914,6 @@ export default {
   checkAchievementRewards,
   runWeeklyVipSalaryPayout,
   payoutLeadershipRewards,
+  getQualifiedLeadershipTier,
   distributeLevelRoiCommissions
 };

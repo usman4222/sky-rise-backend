@@ -1,6 +1,8 @@
+import mongoose from 'mongoose';
 import Deposit from '../models/finance/deposit.model.js';
 import Withdrawal from '../models/finance/withdrawal.model.js';
 import Wallet from '../models/finance/wallet.model.js';
+
 import WalletHistory from '../models/finance/wallet_history.model.js';
 import PaymentMethod from '../models/finance/payment_method.model.js';
 import WeeklySalaryRequest from '../models/finance/weekly_salary_request.model.js';
@@ -846,13 +848,23 @@ const listUsers = async (req, res) => {
 
     let filter = {};
     if (search) {
-      filter = {
-        $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { email: { $regex: search, $options: 'i' } },
-          { referralCode: { $regex: search, $options: 'i' } }
-        ]
-      };
+      if (mongoose.Types.ObjectId.isValid(search)) {
+        // Search by Wallet ID first, then by User ID
+        const walletDoc = await Wallet.findById(search);
+        if (walletDoc) {
+          filter = { _id: walletDoc.user };
+        } else {
+          filter = { _id: search };
+        }
+      } else {
+        filter = {
+          $or: [
+            { name: { $regex: search, $options: 'i' } },
+            { email: { $regex: search, $options: 'i' } },
+            { referralCode: { $regex: search, $options: 'i' } }
+          ]
+        };
+      }
     }
 
     const totalItems = await User.countDocuments(filter);
@@ -892,7 +904,7 @@ const getUserDetail = async (req, res) => {
     const legs = await LegReport.find({ user: id }).populate('legUser', 'name email referralCode');
     const investments = await UserInvestment.find({ user: id }).populate('package', 'name');
     const deposits = await Deposit.find({ user: id }).sort({ createdAt: -1 }).limit(5);
-    const withdrawals = await Withdrawal.find({ user: id }).sort({ createdAt: -1 }).limit(5);
+    const withdrawals = await WithdrawalRequest.find({ user: id }).sort({ createdAt: -1 }).limit(5);
 
     return successResponse(res, 'User details retrieved successfully', {
       user: userObj,

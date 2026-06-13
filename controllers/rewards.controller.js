@@ -7,6 +7,9 @@ import AchievementReward from '../models/rewards/achievement_reward.model.js';
 import BusinessReport from '../models/network/business_report.model.js';
 import LegReport from '../models/network/leg_report.model.js';
 import UserInvestment from '../models/investment/user_investment.model.js';
+import LeadershipReward from '../models/rewards/leadership_reward.model.js';
+import Wallet from '../models/finance/wallet.model.js';
+import WalletHistory from '../models/finance/wallet_history.model.js';
 import rewardEngine from '../utils/rewardEngine.js';
 import { sendError, successResponse } from '../utils/response.js';
 
@@ -189,7 +192,143 @@ const getAchievements = async (req, res) => {
   }
 };
 
+// @desc    Get user's qualified leadership tier progress, criteria, and rewards history
+// @route   GET /api/rewards/leadership-status
+// @access  Private
+const getLeadershipStatus = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    // 1. Fetch active investments of the user
+    const activeInvestments = await UserInvestment.find({ user: userId, status: 'active' });
+    const autoReinvestOn = activeInvestments.length > 0 && activeInvestments.every(inv => inv.autoReinvest === true);
+    const totalSelfInvestment = activeInvestments.reduce((sum, inv) => sum + inv.amount, 0);
+
+    // 2. Count active direct referrals
+    const directs = await ReferralTree.find({ referredBy: userId });
+    const directIds = directs.map(d => d.user);
+    const activeDirectIds = await UserInvestment.distinct('user', {
+      user: { $in: directIds },
+      status: 'active'
+    });
+    const activeDirectsCount = activeDirectIds.length;
+
+    // 3. Fetch user ranks
+    const user = await User.findById(userId);
+    const vipRank = user.vipRank || 0;
+    const achievementRank = user.achievementRank || 0;
+
+    // Calculate current qualified leadership tier
+    const qualifiedTier = await rewardEngine.getQualifiedLeadershipTier(userId);
+
+    // 4. Fetch leadership rewards history, populating the downlineUser's basic info
+    const history = await LeadershipReward.find({ user: userId })
+      .populate('downlineUser', 'name email')
+      .sort({ createdAt: -1 });
+
+    // Calculate pending missed rewards amount
+    const pendingRecoveryTotal = history
+      .filter(r => r.status === 'missed' && r.targetTier <= qualifiedTier)
+      .reduce((sum, r) => sum + r.amount, 0);
+
+    return successResponse(res, 'Leadership status retrieved successfully', {
+      qualifiedTier,
+      autoReinvestOn,
+      totalSelfInvestment,
+      activeDirectsCount,
+      vipRank,
+      achievementRank,
+      history: history.map(h => ({
+        _id: h._id,
+        createdAt: h.createdAt,
+        downlineUser: h.downlineUser ? {
+          id: h.downlineUser._id,
+          name: h.downlineUser.name,
+          email: h.downlineUser.email
+        } : null,
+        rewardName: h.rewardName,
+        amount: h.amount,
+        targetTier: h.targetTier,
+        status: h.status,
+        recoveredAt: h.recoveredAt
+      })),
+      pendingRecoveryTotal
+    });
+  } catch (error) {
+    console.error('getLeadershipStatus error:', error);
+    return sendError(res, 'Failed to fetch leadership reward status details', 500, error);
+  }
+};
+
+// @desc    Recover missed leadership rewards that the user is now qualified to claim
+// @route   POST /api/rewards/recover-leadership-rewards
+// @access  Private
+const recoverLeadershipRewards = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    // 1. Calculate current qualified leadership tier
+    const qualifiedTier = await rewardEngine.getQualifiedLeadershipTier(userId);
+    if (qualifiedTier === 0) {
+      return sendError(res, 'You do not qualify for any leadership reward tiers. Make sure your Auto-Reinvest is ON and you meet self-investment and direct active members requirements.', 400);
+    }
+
+    // 2. Find missed rewards that target a tier <= qualifiedTier
+    const missedRewards = await LeadershipReward.find({
+      user: userId,
+      status: 'missed',
+      targetTier: { $lte: qualifiedTier }
+    });
+
+    if (missedRewards.length === 0) {
+      return sendError(res, 'No pending missed rewards are currently available for recovery.', 400);
+    }
+
+    const totalRecoveredAmount = missedRewards.reduce((sum, r) => sum + r.amount, 0);
+
+    // 3. Credit to user's wallet
+    let wallet = await Wallet.findOne({ user: userId });
+    if (!wallet) {
+      wallet = new Wallet({ user: userId });
+    }
+
+    const prevBal = wallet.referral || 0;
+    wallet.referral = prevBal + totalRecoveredAmount;
+    await wallet.save();
+
+    // 4. Record in WalletHistory
+    const recoveryLogIds = missedRewards.map(r => r._id);
+    await WalletHistory.create({
+      user: userId,
+      walletType: 'referral',
+      type: 'credit',
+      amount: totalRecoveredAmount,
+      previousBalance: prevBal,
+      newBalance: wallet.referral,
+      category: 'referral',
+      description: `Recovered ${missedRewards.length} missed leadership rewards. New qualified tier: Tier ${qualifiedTier}`,
+      referenceModel: 'LeadershipReward',
+      referenceId: missedRewards[0]._id
+    });
+
+    // 5. Mark rewards as recovered
+    await LeadershipReward.updateMany(
+      { _id: { $in: recoveryLogIds } },
+      { $set: { status: 'recovered', recoveredAt: new Date() } }
+    );
+
+    return successResponse(res, `Successfully recovered $${totalRecoveredAmount.toFixed(2)} missed leadership rewards!`, {
+      recoveredAmount: totalRecoveredAmount
+    });
+  } catch (error) {
+    console.error('recoverLeadershipRewards error:', error);
+    return sendError(res, 'Failed to recover missed leadership rewards', 500, error);
+  }
+};
+
 export default {
   getVipStatus,
-  getAchievements
+  getAchievements,
+  getLeadershipStatus,
+  recoverLeadershipRewards
 };

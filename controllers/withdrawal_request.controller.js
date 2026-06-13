@@ -3,6 +3,7 @@ import UserPaymentMethod from '../models/finance/user_payment_method.model.js';
 import Wallet from '../models/finance/wallet.model.js';
 import WalletHistory from '../models/finance/wallet_history.model.js';
 import Notification from '../models/system/notification.model.js';
+import User from '../models/auth/user.model.js';
 import { successResponse, sendError } from '../utils/response.js';
 
 // @desc    Submit a withdrawal request
@@ -62,6 +63,10 @@ export const requestWithdrawal = async (req, res) => {
     // Snapshot payment method to decouple from subsequent edits
     const snapshot = pm.toObject();
 
+    // Check if user is admin funded
+    const userProfile = await User.findById(userId);
+    const isAdminFundedUser = userProfile ? userProfile.isAdminFunded === true : false;
+
     const wr = await WithdrawalRequest.create({
       user: userId,
       walletType,
@@ -71,7 +76,8 @@ export const requestWithdrawal = async (req, res) => {
       paymentMethod: paymentMethodId,
       paymentMethodSnapshot: snapshot,
       walletHistoryDebitRef: historyDebit._id,
-      status: 'pending'
+      status: 'pending',
+      isAdminFundedUser
     });
 
     // Link reference ID

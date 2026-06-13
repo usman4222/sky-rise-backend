@@ -53,6 +53,11 @@ const walletSchema = new mongoose.Schema({
     default: 0,
     min: [0, 'Achievement rewards cannot be negative']
   },
+  adminAllocated: {
+    type: Number,
+    default: 0,
+    min: [0, 'Admin allocated balance cannot be negative']
+  },
   withdrawal: {
     type: Number,
     default: 0, // Keeps track of pending / processed withdrawal total

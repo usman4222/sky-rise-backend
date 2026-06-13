@@ -59,7 +59,9 @@ const userSchema = new mongoose.Schema({
 
   imageUrl: { type: String, default: null },
 
-  imagePublicId: { type: String, default: null }
+  imagePublicId: { type: String, default: null },
+
+  isAdminFunded: { type: Boolean, default: false }
 
 }, { timestamps: true, collection: 'users' });
 

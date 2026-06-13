@@ -57,7 +57,8 @@ const purchasePackage = async (req, res) => {
       amountInvested: amountInvestedFromBody,
       useBonus: useBonusFromBody,
       useSignupBonus,
-      roiClaimMode
+      useAdminAllocated,
+      autoReinvest
     } = req.body;
 
     if (!packageId) {
@@ -85,8 +86,9 @@ const purchasePackage = async (req, res) => {
         ? useBonusFromBody === true || useBonusFromBody === 'true'
         : useSignupBonus === true || useSignupBonus === 'true';
 
-    // Validate roiClaimMode
-    const claimMode = (roiClaimMode === 'manual' || roiClaimMode === 'auto') ? roiClaimMode : 'auto';
+    // Auto-reinvest settings: default to true if not specified
+    const shouldAutoReinvest = autoReinvest === undefined ? true : (autoReinvest === true || autoReinvest === 'true');
+    const claimMode = shouldAutoReinvest ? 'auto' : 'manual';
 
     // 1. Fetch package rules
     const pkg = await InvestmentPackage.findById(packageId);
@@ -132,10 +134,81 @@ const purchasePackage = async (req, res) => {
     let bonusAmountPaid = 0;
     let freeRegBonusPaid = 0;
     let teamBonusReceivedPaid = 0;
+    const isAllocated = useAdminAllocated === true || useAdminAllocated === 'true';
 
-    // RULE 1: First investment merge signup bonus check
-    // Only applies when: bonus is still active, wallet has the $5, AND investment amount >= $50
     const userProfile = await User.findById(req.user._id);
+
+    if (isAllocated) {
+      // Validate wallet has enough allocated balance
+      if (wallet.adminAllocated < amountInvested) {
+        return sendError(
+          res,
+          `Insufficient admin allocated balance. You need $${amountInvested.toFixed(2)} allocated balance to buy ${pkg.name}. Your current admin allocated balance is $${Number(wallet.adminAllocated || 0).toFixed(2)}.`,
+          400
+        );
+      }
+
+      // Deduct from wallet
+      const prevAllocBal = wallet.adminAllocated;
+      wallet.adminAllocated -= amountInvested;
+      await wallet.save();
+
+      // Log in WalletHistory
+      await WalletHistory.create({
+        user: req.user._id,
+        walletType: 'adminAllocated',
+        type: 'debit',
+        amount: amountInvested,
+        previousBalance: prevAllocBal,
+        newBalance: wallet.adminAllocated,
+        category: 'investment_purchase',
+        description: `Invested in ${pkg.name} using Admin Allocated Balance. Amount paid: $${amountInvested}`
+      });
+
+      // Create active investment tagged as Admin Funded
+      const roiStartTime = new Date();
+      const userInvestment = new UserInvestment({
+        user: req.user._id,
+        package: packageId,
+        amount: amountInvested,
+        status: 'active',
+        currentRoi: pkg.startRoi,
+        lastIncrementAt: roiStartTime,
+        lastPayoutAt: roiStartTime,
+        roiClaimMode: claimMode,
+        autoReinvest: shouldAutoReinvest,
+        packageType: 'Admin Funded Package'
+      });
+
+      await userInvestment.save();
+
+      const paymentBreakdown = new InvestmentPayment({
+        userInvestment: userInvestment._id,
+        realAmountPaid: 0,
+        freeRegBonusPaid: 0,
+        teamBonusReceivedPaid: 0,
+        totalAmount: amountInvested
+      });
+
+      await paymentBreakdown.save();
+
+      await Notification.create({
+        user: req.user._id,
+        title: 'Investment Active (Admin Funded)',
+        message: `Successfully invested $${amountInvested.toFixed(2)} in ${pkg.name} using Admin Allocated Balance.`,
+        category: 'investment'
+      });
+
+      return successResponse(
+        res,
+        'Package purchased successfully using Admin Allocated Balance! Investment is now active.',
+        {
+          investment: userInvestment,
+          payment: paymentBreakdown
+        },
+        201
+      );
+    }
 
     if (userProfile?.registrationBonusActive && wallet.freeRegBonus >= 5 && amountInvested >= 50) {
       freeRegBonusPaid = 5;
@@ -236,7 +309,8 @@ const purchasePackage = async (req, res) => {
       currentRoi: pkg.startRoi,
       lastIncrementAt: roiStartTime,
       lastPayoutAt: roiStartTime,
-      roiClaimMode: claimMode
+      roiClaimMode: claimMode,
+      autoReinvest: shouldAutoReinvest
     });
 
     await userInvestment.save();
@@ -385,6 +459,10 @@ const withdrawCapital = async (req, res) => {
       return sendError(res, 'Active investment contract not found', 404);
     }
 
+    if (investment.packageType === 'Admin Funded Package') {
+      return sendError(res, 'Capital withdrawal is disabled for Admin Funded Packages. The principal is permanently locked.', 400);
+    }
+
     const payment = await InvestmentPayment.findOne({ userInvestment: investmentId });
     if (!payment) {
       return sendError(res, 'Payment funding logs missing', 404);
@@ -521,6 +599,7 @@ const toggleAutoReinvest = async (req, res) => {
       return sendError(res, 'Active investment not found', 404);
     }
     investment.autoReinvest = !investment.autoReinvest;
+    investment.roiClaimMode = investment.autoReinvest ? 'auto' : 'manual';
     await investment.save();
     return successResponse(res, `Auto-reinvestment has been successfully turned ${investment.autoReinvest ? 'ON' : 'OFF'}.`, {
       investment

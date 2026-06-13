@@ -93,6 +93,18 @@ const depositSchema = new mongoose.Schema({
   expiresAt: {
     type: Date,
     default: null
+  },
+  cryptoAddress: {
+    type: String,
+    default: null
+  },
+  cryptoAmount: {
+    type: Number,
+    default: null
+  },
+  cryptoQrCodeUrl: {
+    type: String,
+    default: null
   }
 }, {
   timestamps: true,

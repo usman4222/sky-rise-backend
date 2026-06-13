@@ -129,6 +129,10 @@ export const createInvoice = async (options = {}) => {
     invoiceId: result.txn_id, // Gateway transaction ID
     checkoutUrl: result.checkout_url,
     statusUrl: result.status_url,
+    address: result.address,
+    amount: result.amount,
+    qrcodeUrl: result.qrcode_url,
+    timeout: result.timeout,
     expiresAt: result.timeout ? new Date(Date.now() + result.timeout * 1000) : new Date(Date.now() + 60 * 60 * 1000),
     rawResponse: data
   };

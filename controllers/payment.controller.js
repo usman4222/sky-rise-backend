@@ -428,10 +428,14 @@ const createUsdtDeposit = async (req, res) => {
         status: 'pending',
         checkoutUrl: cpInvoice.checkoutUrl,
         expiresAt: cpInvoice.expiresAt,
+        cryptoAddress: cpInvoice.address || null,
+        cryptoAmount: cpInvoice.amount ? Number(cpInvoice.amount) : numericUSDT,
+        cryptoQrCodeUrl: cpInvoice.qrcodeUrl || null,
+        gatewayResponse: cpInvoice.rawResponse,
         remarks: 'Awaiting CoinPayments USDT payment (Real/Live Transaction)'
       });
 
-      return successResponse(res, 'USDT deposit initiated. Redirect to CoinPayments to complete payment.', {
+      return successResponse(res, 'USDT deposit initiated. Complete your crypto checkout.', {
         deposit: {
           id: deposit._id,
           transactionId: orderId,
@@ -439,7 +443,10 @@ const createUsdtDeposit = async (req, res) => {
           status: deposit.status,
           checkoutUrl: cpInvoice.checkoutUrl,
           invoiceId: cpInvoice.invoiceId,
-          expiresAt: cpInvoice.expiresAt
+          expiresAt: cpInvoice.expiresAt,
+          cryptoAddress: cpInvoice.address || null,
+          cryptoAmount: cpInvoice.amount ? Number(cpInvoice.amount) : numericUSDT,
+          cryptoQrCodeUrl: cpInvoice.qrcodeUrl || null
         }
       }, 201);
     } catch (cpError) {

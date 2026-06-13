@@ -4,6 +4,8 @@ import Wallet from '../models/finance/wallet.model.js';
 import WalletHistory from '../models/finance/wallet_history.model.js';
 import Notification from '../models/system/notification.model.js';
 import { successResponse, sendError } from '../utils/response.js';
+import User from '../models/auth/user.model.js';
+import AdminBalanceHistory from '../models/finance/admin_balance_history.model.js';
 
 // ==========================================
 // WEEKLY SALARY APPROVALS
@@ -355,3 +357,159 @@ export const markPaidWithdrawalRequest = async (req, res) => {
     return sendError(res, 'Failed to mark withdrawal as paid', 500, error);
   }
 };
+
+// @desc    Adjust user wallet balance (deposit or adminAllocated)
+// @route   POST /api/admin/users/:id/balance/adjust
+// @access  Admin/SuperAdmin
+export const adjustUserBalance = async (req, res) => {
+  try {
+    const { balanceType, action, amount, remarks } = req.body;
+    const userId = req.params.id;
+
+    if (!['deposit', 'adminAllocated'].includes(balanceType)) {
+      return sendError(res, 'Invalid balance type. Must be deposit or adminAllocated', 400);
+    }
+
+    if (!['add', 'deduct'].includes(action)) {
+      return sendError(res, 'Invalid action. Must be add or deduct', 400);
+    }
+
+    const numAmount = Number(amount);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      return sendError(res, 'Amount must be a positive number', 400);
+    }
+
+    const targetUser = await User.findById(userId);
+    if (!targetUser) {
+      return sendError(res, 'User not found', 404);
+    }
+
+    let wallet = await Wallet.findOne({ user: userId });
+    if (!wallet) {
+      wallet = new Wallet({ user: userId });
+    }
+
+    const balanceBefore = wallet[balanceType] || 0;
+    let balanceAfter = balanceBefore;
+
+    if (action === 'add') {
+      balanceAfter = balanceBefore + numAmount;
+    } else {
+      if (balanceBefore < numAmount) {
+        return sendError(res, `Insufficient balance. Current ${balanceType} balance is $${balanceBefore}`, 400);
+      }
+      balanceAfter = balanceBefore - numAmount;
+    }
+
+    // Update wallet balance
+    wallet[balanceType] = balanceAfter;
+    await wallet.save();
+
+    // If adding to adminAllocated balance, flag the target user as admin-funded
+    if (balanceType === 'adminAllocated' && action === 'add') {
+      targetUser.isAdminFunded = true;
+      await targetUser.save();
+    }
+
+    // Generate unique reference number
+    const referenceNumber = `REF-ADJ-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    // Get admin details
+    const adminUser = await User.findById(req.user._id);
+    const adminName = adminUser ? adminUser.name : 'Admin';
+
+    // Create AdminBalanceHistory record
+    const adminHistory = new AdminBalanceHistory({
+      user: targetUser._id,
+      username: targetUser.email, // email acts as username since username is not in User model
+      fullName: targetUser.name,
+      amountAdded: action === 'add' ? numAmount : 0,
+      amountDeducted: action === 'deduct' ? numAmount : 0,
+      balanceType,
+      balanceBefore,
+      balanceAfter,
+      admin: req.user._id,
+      adminName,
+      remarks: remarks || '',
+      referenceNumber
+    });
+    await adminHistory.save();
+
+    // Create WalletHistory entry
+    await WalletHistory.create({
+      user: targetUser._id,
+      walletType: balanceType,
+      type: action === 'add' ? 'credit' : 'debit',
+      amount: numAmount,
+      previousBalance: balanceBefore,
+      newBalance: balanceAfter,
+      category: `admin_adjustment_${action}`,
+      description: `Admin ${action} of $${numAmount} to ${balanceType} wallet. Remarks: ${remarks || 'None'}`,
+      referenceModel: 'AdminBalanceHistory',
+      referenceId: adminHistory._id
+    });
+
+    // Send Notification
+    await Notification.create({
+      user: targetUser._id,
+      title: `Wallet Adjusted by Admin`,
+      message: `Your ${balanceType === 'adminAllocated' ? 'Admin Allocated' : 'Deposit'} wallet balance was adjusted by Admin. Action: ${action.toUpperCase()}, Amount: $${numAmount.toFixed(2)}.`,
+      category: 'system'
+    });
+
+    return successResponse(res, `Balance adjusted successfully. Reference: ${referenceNumber}`, {
+      wallet,
+      historyRecord: adminHistory
+    });
+  } catch (error) {
+    console.error('adjustUserBalance error:', error);
+    return sendError(res, 'Failed to adjust user balance', 500, error);
+  }
+};
+
+// @desc    Get admin balance adjustments history
+// @route   GET /api/admin/balance/history
+// @access  Admin/SuperAdmin
+export const getAdminBalanceHistory = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const query = {};
+
+    // Support search by user email/username or full name
+    if (req.query.search) {
+      const searchRegex = new RegExp(req.query.search, 'i');
+      query.$or = [
+        { username: searchRegex },
+        { fullName: searchRegex },
+        { referenceNumber: searchRegex }
+      ];
+    }
+
+    const totalItems = await AdminBalanceHistory.countDocuments(query);
+    const totalPages = Math.ceil(totalItems / limit);
+
+    const history = await AdminBalanceHistory.find(query)
+      .populate('user', 'name email')
+      .populate('admin', 'name email')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    return successResponse(res, 'Admin balance history retrieved successfully', {
+      history,
+      pagination: {
+        totalItems,
+        totalPages,
+        currentPage: page,
+        limit
+      }
+    });
+  } catch (error) {
+    console.error('getAdminBalanceHistory error:', error);
+    return sendError(res, 'Failed to get admin balance history', 500, error);
+  }
+};
+

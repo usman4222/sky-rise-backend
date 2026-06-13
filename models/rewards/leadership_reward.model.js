@@ -31,6 +31,21 @@ const leadershipRewardSchema = new mongoose.Schema({
   amount: {
     type: Number,
     required: true
+  },
+  status: {
+    type: String,
+    enum: ['paid', 'missed', 'recovered'],
+    default: 'paid',
+    index: true
+  },
+  targetTier: {
+    type: Number,
+    required: true,
+    default: 1
+  },
+  recoveredAt: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true,
