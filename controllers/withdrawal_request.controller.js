@@ -18,7 +18,7 @@ export const requestWithdrawal = async (req, res) => {
       return sendError(res, 'Minimum withdrawal amount is $10', 400);
     }
 
-    if (!['roi', 'referral', 'salary', 'achievement'].includes(walletType)) {
+    if (!['roi', 'referral', 'salary', 'achievement', 'all'].includes(walletType)) {
       return sendError(res, 'Direct withdrawal from the selected wallet is not allowed', 400);
     }
 
@@ -34,27 +34,59 @@ export const requestWithdrawal = async (req, res) => {
 
     // Get user wallet and verify balance
     const wallet = await Wallet.findOne({ user: userId });
-    if (!wallet || wallet[walletType] < amount) {
-      return sendError(res, `Insufficient balance in your ${walletType} wallet.`, 400);
+    if (!wallet) {
+      return sendError(res, 'User wallet balances not initialized', 400);
     }
 
-    // Deduct immediately (hold placement)
-    const prevBal = wallet[walletType];
-    wallet[walletType] -= amount;
-    await wallet.save();
+    let remainingToPay = amount;
+    const deductions = [];
 
-    // Create WalletHistory debit
-    const historyDebit = await WalletHistory.create({
-      user: userId,
-      walletType,
-      type: 'debit',
-      amount,
-      previousBalance: prevBal,
-      newBalance: wallet[walletType],
-      category: 'withdrawal_request_hold',
-      description: `Pending withdrawal of $${amount} from ${walletType} wallet placed on hold`,
-      referenceModel: 'WithdrawalRequest'
-    });
+    if (walletType === 'all') {
+      const availablePool = (wallet.roi || 0) + (wallet.referral || 0) + (wallet.salary || 0) + (wallet.achievement || 0);
+      if (availablePool < amount) {
+        return sendError(res, `Insufficient balance. Your total withdrawable balance is $${availablePool.toFixed(2)}.`, 400);
+      }
+
+      const walletsToDeduct = [
+        { name: 'roi', label: 'ROI Wallet' },
+        { name: 'referral', label: 'Referral Wallet' },
+        { name: 'salary', label: 'Salary Wallet' },
+        { name: 'achievement', label: 'Achievement Wallet' }
+      ];
+
+      for (const wType of walletsToDeduct) {
+        if (remainingToPay <= 0) break;
+        const currentBal = wallet[wType.name] || 0;
+        if (currentBal > 0) {
+          const deductAmount = Math.min(currentBal, remainingToPay);
+          const prevBal = currentBal;
+          wallet[wType.name] -= deductAmount;
+          remainingToPay -= deductAmount;
+          deductions.push({
+            walletType: wType.name,
+            label: wType.label,
+            amount: deductAmount,
+            prevBal,
+            newBal: wallet[wType.name]
+          });
+        }
+      }
+    } else {
+      if (wallet[walletType] < amount) {
+        return sendError(res, `Insufficient balance in your ${walletType} wallet.`, 400);
+      }
+      const prevBal = wallet[walletType];
+      wallet[walletType] -= amount;
+      deductions.push({
+        walletType,
+        label: `${walletType.toUpperCase()} Wallet`,
+        amount,
+        prevBal,
+        newBal: wallet[walletType]
+      });
+    }
+
+    await wallet.save();
 
     // Calculate fees
     const fee = amount * 0.05;
@@ -75,14 +107,34 @@ export const requestWithdrawal = async (req, res) => {
       netAmount,
       paymentMethod: paymentMethodId,
       paymentMethodSnapshot: snapshot,
-      walletHistoryDebitRef: historyDebit._id,
       status: 'pending',
       isAdminFundedUser
     });
 
-    // Link reference ID
-    historyDebit.referenceId = wr._id;
-    await historyDebit.save();
+    // Create WalletHistory debits and link referenceId
+    let primaryDebitId = null;
+    for (const d of deductions) {
+      const historyDebit = await WalletHistory.create({
+        user: userId,
+        walletType: d.walletType,
+        type: 'debit',
+        amount: d.amount,
+        previousBalance: d.prevBal,
+        newBalance: d.newBal,
+        category: 'withdrawal_request_hold',
+        description: `Pending withdrawal of $${d.amount.toFixed(2)} from ${d.label} placed on hold`,
+        referenceModel: 'WithdrawalRequest',
+        referenceId: wr._id
+      });
+      if (!primaryDebitId) {
+        primaryDebitId = historyDebit._id;
+      }
+    }
+
+    if (primaryDebitId) {
+      wr.walletHistoryDebitRef = primaryDebitId;
+      await wr.save();
+    }
 
     // Notify user
     await Notification.create({
@@ -172,27 +224,60 @@ export const cancelWithdrawal = async (req, res) => {
 
     // Refund wallet
     const wallet = await Wallet.findOne({ user: userId });
-    const walletType = wr.walletType;
-    const prevBal = wallet[walletType];
-    wallet[walletType] += wr.amountRequested;
-    await wallet.save();
+    if (!wallet) {
+      return sendError(res, 'User wallet not found for refund', 400);
+    }
 
-    // Create WalletHistory credit
-    const historyRefund = await WalletHistory.create({
-      user: userId,
-      walletType,
-      type: 'credit',
-      amount: wr.amountRequested,
-      previousBalance: prevBal,
-      newBalance: wallet[walletType],
-      category: 'withdrawal_cancelled_refund',
-      description: `Refund of $${wr.amountRequested} due to cancelled withdrawal request`,
-      referenceModel: 'WithdrawalRequest',
-      referenceId: wr._id
-    });
+    const debits = await WalletHistory.find({ referenceId: wr._id, type: 'debit' });
+    let primaryRefundId = null;
+
+    if (debits.length > 0) {
+      for (const d of debits) {
+        const prevBal = wallet[d.walletType] || 0;
+        wallet[d.walletType] += d.amount;
+
+        const historyRefund = await WalletHistory.create({
+          user: userId,
+          walletType: d.walletType,
+          type: 'credit',
+          amount: d.amount,
+          previousBalance: prevBal,
+          newBalance: wallet[d.walletType],
+          category: 'withdrawal_cancelled_refund',
+          description: `Refund of $${d.amount.toFixed(2)} to ${d.walletType.toUpperCase()} Wallet due to cancelled withdrawal request`,
+          referenceModel: 'WithdrawalRequest',
+          referenceId: wr._id
+        });
+
+        if (!primaryRefundId) {
+          primaryRefundId = historyRefund._id;
+        }
+      }
+      await wallet.save();
+    } else {
+      const walletType = wr.walletType === 'all' ? 'roi' : wr.walletType;
+      const prevBal = wallet[walletType] || 0;
+      wallet[walletType] += wr.amountRequested;
+      await wallet.save();
+
+      const historyRefund = await WalletHistory.create({
+        user: userId,
+        walletType,
+        type: 'credit',
+        amount: wr.amountRequested,
+        previousBalance: prevBal,
+        newBalance: wallet[walletType],
+        category: 'withdrawal_cancelled_refund',
+        description: `Refund of $${wr.amountRequested} due to cancelled withdrawal request`,
+        referenceModel: 'WithdrawalRequest',
+        referenceId: wr._id
+      });
+
+      primaryRefundId = historyRefund._id;
+    }
 
     wr.status = 'cancelled';
-    wr.walletHistoryRefundRef = historyRefund._id;
+    wr.walletHistoryRefundRef = primaryRefundId;
     await wr.save();
 
     // Notify user

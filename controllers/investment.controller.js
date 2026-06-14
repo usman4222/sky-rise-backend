@@ -260,8 +260,10 @@ const purchasePackage = async (req, res) => {
       }
     }
 
-    // Deposit balance check
-    if (wallet.deposit < realAmountPaid) {
+    // Combined available pool check (Deposit Wallet + Withdrawable Wallets)
+    const availablePool = (wallet.deposit || 0) + (wallet.roi || 0) + (wallet.referral || 0) + (wallet.salary || 0) + (wallet.achievement || 0);
+
+    if (availablePool < realAmountPaid) {
       if (freeRegBonusPaid > 0) {
         userProfile.registrationBonusActive = true;
         await userProfile.save();
@@ -276,26 +278,59 @@ const purchasePackage = async (req, res) => {
 
       return sendError(
         res,
-        `Insufficient deposit balance. You need $${realAmountPaid.toFixed(2)} real balance to buy ${pkg.name}. Your current deposit balance is $${Number(wallet.deposit || 0).toFixed(2)}.`,
+        `Insufficient balance. You need $${realAmountPaid.toFixed(2)} to buy ${pkg.name}. Your total available balance (including withdrawal earnings) is $${availablePool.toFixed(2)}.`,
         400
       );
     }
 
-    // Deduct deposit wallet
-    const prevDepBal = wallet.deposit;
-    wallet.deposit -= realAmountPaid;
+    // Deduct sequentially from Deposit and Withdrawable wallets
+    let remainingToPay = realAmountPaid;
+    const deductions = [];
+
+    const walletsToDeduct = [
+      { name: 'deposit', label: 'Deposit Wallet' },
+      { name: 'roi', label: 'ROI Wallet' },
+      { name: 'referral', label: 'Referral Wallet' },
+      { name: 'salary', label: 'Salary Wallet' },
+      { name: 'achievement', label: 'Achievement Wallet' }
+    ];
+
+    for (const wType of walletsToDeduct) {
+      if (remainingToPay <= 0) break;
+
+      const currentBal = wallet[wType.name] || 0;
+      if (currentBal > 0) {
+        const deductAmount = Math.min(currentBal, remainingToPay);
+        const prevBal = currentBal;
+
+        wallet[wType.name] -= deductAmount;
+        remainingToPay -= deductAmount;
+
+        deductions.push({
+          walletType: wType.name,
+          label: wType.label,
+          amount: deductAmount,
+          prevBal,
+          newBal: wallet[wType.name]
+        });
+      }
+    }
+
     await wallet.save();
 
-    await WalletHistory.create({
-      user: req.user._id,
-      walletType: 'deposit',
-      type: 'debit',
-      amount: realAmountPaid,
-      previousBalance: prevDepBal,
-      newBalance: wallet.deposit,
-      category: 'investment_purchase',
-      description: `Invested in ${pkg.name}. Real amount paid: $${realAmountPaid}`
-    });
+    // Log WalletHistory for each wallet type deducted
+    for (const d of deductions) {
+      await WalletHistory.create({
+        user: req.user._id,
+        walletType: d.walletType,
+        type: 'debit',
+        amount: d.amount,
+        previousBalance: d.prevBal,
+        newBalance: d.newBal,
+        category: 'investment_purchase',
+        description: `Deducted $${d.amount.toFixed(2)} from ${d.label} for ${pkg.name} purchase.`
+      });
+    }
 
     // 3. Create active investment (Starts at the End of the Day)
     const totalPrincipalSize = amountInvested + freeRegBonusPaid;

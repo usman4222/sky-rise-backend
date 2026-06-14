@@ -9,7 +9,7 @@ const withdrawalRequestSchema = new mongoose.Schema({
   },
   walletType: {
     type: String,
-    enum: ['roi', 'referral', 'salary', 'achievement'],
+    enum: ['roi', 'referral', 'salary', 'achievement', 'all'],
     required: true
   },
   amountRequested: {

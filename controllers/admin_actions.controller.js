@@ -269,35 +269,68 @@ export const rejectWithdrawalRequest = async (req, res) => {
     }
 
     const userId = wr.user;
-    const walletType = wr.walletType;
     const amount = wr.amountRequested;
 
     // Refund user wallet
     const wallet = await Wallet.findOne({ user: userId });
-    const prevBal = wallet[walletType];
-    wallet[walletType] += amount;
-    await wallet.save();
+    if (!wallet) {
+      return sendError(res, 'User wallet not found for refund', 400);
+    }
 
-    // Create WalletHistory credit
-    const historyRefund = await WalletHistory.create({
-      user: userId,
-      walletType,
-      type: 'credit',
-      amount,
-      previousBalance: prevBal,
-      newBalance: wallet[walletType],
-      category: 'withdrawal_rejected_refund',
-      description: `Refund of $${amount} due to rejected withdrawal request`,
-      referenceModel: 'WithdrawalRequest',
-      referenceId: wr._id
-    });
+    const debits = await WalletHistory.find({ referenceId: wr._id, type: 'debit' });
+    let primaryRefundId = null;
+
+    if (debits.length > 0) {
+      for (const d of debits) {
+        const prevBal = wallet[d.walletType] || 0;
+        wallet[d.walletType] += d.amount;
+
+        const historyRefund = await WalletHistory.create({
+          user: userId,
+          walletType: d.walletType,
+          type: 'credit',
+          amount: d.amount,
+          previousBalance: prevBal,
+          newBalance: wallet[d.walletType],
+          category: 'withdrawal_rejected_refund',
+          description: `Refund of $${d.amount.toFixed(2)} to ${d.walletType.toUpperCase()} Wallet due to rejected withdrawal request`,
+          referenceModel: 'WithdrawalRequest',
+          referenceId: wr._id
+        });
+
+        if (!primaryRefundId) {
+          primaryRefundId = historyRefund._id;
+        }
+      }
+      await wallet.save();
+    } else {
+      const walletType = wr.walletType === 'all' ? 'roi' : wr.walletType;
+      const prevBal = wallet[walletType] || 0;
+      wallet[walletType] += amount;
+      await wallet.save();
+
+      const historyRefund = await WalletHistory.create({
+        user: userId,
+        walletType,
+        type: 'credit',
+        amount,
+        previousBalance: prevBal,
+        newBalance: wallet[walletType],
+        category: 'withdrawal_rejected_refund',
+        description: `Refund of $${amount} due to rejected withdrawal request`,
+        referenceModel: 'WithdrawalRequest',
+        referenceId: wr._id
+      });
+
+      primaryRefundId = historyRefund._id;
+    }
 
     wr.status = 'rejected';
     wr.rejectionReason = rejectionReason;
     if (adminNote) wr.adminNote = adminNote;
     wr.reviewedAt = new Date();
     wr.reviewedBy = req.user._id;
-    wr.walletHistoryRefundRef = historyRefund._id;
+    wr.walletHistoryRefundRef = primaryRefundId;
     await wr.save();
 
     // Notify user
