@@ -88,21 +88,39 @@ const app = express();
 app.set('trust proxy', 1);
 
 // 2. Helmet for secure HTTP headers configuration
-app.use(helmet());
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' }
+  })
+);
 
 // 3. Strict CORS configuration
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',')
-  : [process.env.FRONTEND_URL || 'http://localhost:5173'];
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:4173',
+  'https://sky-rise-wine.vercel.app'
+];
+
+if (process.env.ALLOWED_ORIGINS) {
+  allowedOrigins.push(...process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()));
+}
+if (process.env.FRONTEND_URL) {
+  allowedOrigins.push(process.env.FRONTEND_URL.trim());
+}
+
+const uniqueOrigins = [...new Set(allowedOrigins)];
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin in non-production environments
-      if (!origin && process.env.NODE_ENV !== 'production') return callback(null, true);
-      if (!origin && process.env.NODE_ENV === 'production') return callback(null, false);
+      // Allow requests with no origin (like Postman or local curl scripts)
+      if (!origin) return callback(null, true);
       
-      if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
+      const isAllowedVercel = origin.endsWith('.vercel.app') && origin.includes('sky-rise');
+      
+      if (uniqueOrigins.indexOf(origin) !== -1 || uniqueOrigins.includes('*') || isAllowedVercel) {
         callback(null, true);
       } else {
         callback(new Error('Not allowed by CORS'));
