@@ -13,13 +13,14 @@ const {
 } = investmentController;
 
 import { firebaseProtect, firebaseProtectOptional } from '../middleware/firebaseAuth.js';
+import { financeRateLimiter, requestLockGuard } from '../middleware/security.js';
 
 router.get('/packages', firebaseProtectOptional, getPackages);
-router.post('/purchase', firebaseProtect, purchasePackage);
+router.post('/purchase', firebaseProtect, financeRateLimiter, requestLockGuard, purchasePackage);
 router.get('/my-investments', firebaseProtect, getMyInvestments);
-router.post('/withdraw-capital', firebaseProtect, withdrawCapital);
+router.post('/withdraw-capital', firebaseProtect, financeRateLimiter, requestLockGuard, withdrawCapital);
 router.get('/roi-history', firebaseProtect, getRoiHistory);
 router.post('/:id/toggle-reinvest', firebaseProtect, toggleAutoReinvest);
-router.post('/:id/claim-roi', firebaseProtect, claimDailyRoi);
+router.post('/:id/claim-roi', firebaseProtect, financeRateLimiter, requestLockGuard, claimDailyRoi);
 
 export default router;

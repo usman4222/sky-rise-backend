@@ -6,6 +6,7 @@ import Notification from '../models/system/notification.model.js';
 import { successResponse, sendError } from '../utils/response.js';
 import User from '../models/auth/user.model.js';
 import AdminBalanceHistory from '../models/finance/admin_balance_history.model.js';
+import SecurityLog from '../models/auth/security_log.model.js';
 
 // ==========================================
 // WEEKLY SALARY APPROVALS
@@ -110,6 +111,15 @@ export const approveWeeklySalaryRequest = async (req, res) => {
     request.walletHistoryRef = history._id;
     await request.save();
 
+    // Log admin action to SecurityLog
+    await SecurityLog.create({
+      user: req.user._id,
+      event: 'ADMIN_APPROVE_SALARY',
+      description: `Admin ${req.user.email} approved weekly VIP salary request of $${salaryAmount} for user ${userId}`,
+      ipAddress: req.ip || '127.0.0.1',
+      userAgent: req.headers['user-agent'] || 'unknown'
+    });
+
     // Notify user
     await Notification.create({
       user: userId,
@@ -145,6 +155,15 @@ export const rejectWeeklySalaryRequest = async (req, res) => {
     request.reviewedAt = new Date();
     request.reviewedBy = req.user._id;
     await request.save();
+
+    // Log admin action to SecurityLog
+    await SecurityLog.create({
+      user: req.user._id,
+      event: 'ADMIN_REJECT_SALARY',
+      description: `Admin ${req.user.email} rejected weekly salary request (ID: ${request._id}) of $${request.salaryAmount} for user ${request.user}. Reason: ${rejectionReason}`,
+      ipAddress: req.ip || '127.0.0.1',
+      userAgent: req.headers['user-agent'] || 'unknown'
+    });
 
     // Notify user
     await Notification.create({
@@ -237,6 +256,15 @@ export const approveWithdrawalRequest = async (req, res) => {
     wr.reviewedBy = req.user._id;
     if (adminNote) wr.adminNote = adminNote;
     await wr.save();
+
+    // Log admin action to SecurityLog
+    await SecurityLog.create({
+      user: req.user._id,
+      event: 'ADMIN_APPROVE_WITHDRAWAL',
+      description: `Admin ${req.user.email} approved withdrawal request (ID: ${wr._id}) of $${wr.amountRequested} for user ${wr.user}`,
+      ipAddress: req.ip || '127.0.0.1',
+      userAgent: req.headers['user-agent'] || 'unknown'
+    });
 
     // Notify user
     await Notification.create({
@@ -333,6 +361,15 @@ export const rejectWithdrawalRequest = async (req, res) => {
     wr.walletHistoryRefundRef = primaryRefundId;
     await wr.save();
 
+    // Log admin action to SecurityLog
+    await SecurityLog.create({
+      user: req.user._id,
+      event: 'ADMIN_REJECT_WITHDRAWAL',
+      description: `Admin ${req.user.email} rejected withdrawal request (ID: ${wr._id}) of $${amount} for user ${userId}. Reason: ${rejectionReason}`,
+      ipAddress: req.ip || '127.0.0.1',
+      userAgent: req.headers['user-agent'] || 'unknown'
+    });
+
     // Notify user
     await Notification.create({
       user: userId,
@@ -375,6 +412,15 @@ export const markPaidWithdrawalRequest = async (req, res) => {
       wr.reviewedBy = req.user._id;
     }
     await wr.save();
+
+    // Log admin action to SecurityLog
+    await SecurityLog.create({
+      user: req.user._id,
+      event: 'ADMIN_MARK_PAID_WITHDRAWAL',
+      description: `Admin ${req.user.email} marked withdrawal request (ID: ${wr._id}) as paid. Tx ID: ${transactionId}`,
+      ipAddress: req.ip || '127.0.0.1',
+      userAgent: req.headers['user-agent'] || 'unknown'
+    });
 
     // Notify user
     await Notification.create({
@@ -480,6 +526,15 @@ export const adjustUserBalance = async (req, res) => {
       description: `Admin ${action} of $${numAmount} to ${balanceType} wallet. Remarks: ${remarks || 'None'}`,
       referenceModel: 'AdminBalanceHistory',
       referenceId: adminHistory._id
+    });
+
+    // Log admin action to SecurityLog
+    await SecurityLog.create({
+      user: req.user._id,
+      event: 'ADMIN_BALANCE_ADJUST',
+      description: `Admin ${req.user.email} adjusted user ${targetUser.email} ${balanceType} balance (${action} $${numAmount}). Remarks: ${remarks || 'N/A'}`,
+      ipAddress: req.ip || '127.0.0.1',
+      userAgent: req.headers['user-agent'] || 'unknown'
     });
 
     // Send Notification

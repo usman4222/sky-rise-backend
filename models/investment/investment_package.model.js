@@ -59,6 +59,12 @@ const investmentPackageSchema = new mongoose.Schema({
     type: Boolean,
     default: true,
     index: true
+  },
+  packageTarget: {
+    type: String,
+    enum: ['user', 'marketer'],
+    default: 'user',
+    index: true
   }
 }, {
   timestamps: true,

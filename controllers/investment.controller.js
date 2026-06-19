@@ -36,6 +36,21 @@ const getPackages = async (req, res) => {
     const query = { isActive: true };
     if (!isAdmin) {
       query.isHidden = false;
+      let showMarketer = false;
+      if (req.user) {
+        if (req.user.isAdminFunded) {
+          showMarketer = true;
+        } else {
+          const wallet = await Wallet.findOne({ user: req.user._id });
+          if (wallet && wallet.adminAllocated > 0) {
+            showMarketer = true;
+          }
+        }
+      }
+
+      if (!showMarketer) {
+        query.packageTarget = { $ne: 'marketer' };
+      }
     }
 
     const packages = await InvestmentPackage.find(query).sort({ minAmount: 1 });
@@ -135,6 +150,15 @@ const purchasePackage = async (req, res) => {
     let freeRegBonusPaid = 0;
     let teamBonusReceivedPaid = 0;
     const isAllocated = useAdminAllocated === true || useAdminAllocated === 'true';
+
+    // Validate packageTarget vs useAdminAllocated restrictions
+    const isMarketerPackage = pkg.packageTarget === 'marketer';
+    if (isMarketerPackage && !isAllocated) {
+      return sendError(res, 'Marketer packages can only be purchased using admin-allocated balance.', 400);
+    }
+    if (!isMarketerPackage && isAllocated) {
+      return sendError(res, 'Admin-allocated balance can only be invested in marketer packages.', 400);
+    }
 
     const userProfile = await User.findById(req.user._id);
 
@@ -332,7 +356,7 @@ const purchasePackage = async (req, res) => {
       });
     }
 
-    // 3. Create active investment (Starts at the End of the Day)
+    // 3. Create active investment (Starts Instantly)
     const totalPrincipalSize = amountInvested + freeRegBonusPaid;
     const roiStartTime = new Date();
 

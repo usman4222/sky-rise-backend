@@ -1,5 +1,7 @@
 import admin from '../config/firebase.js';
 import User from '../models/auth/user.model.js';
+import UserRole from '../models/auth/user_role.model.js';
+import SecurityLog from '../models/auth/security_log.model.js';
 import { sendError } from '../utils/response.js';
 
 export const firebaseProtect = async (req, res, next) => {
@@ -33,6 +35,25 @@ export const firebaseProtect = async (req, res, next) => {
 
         req.firebaseUser = decodedToken;
         req.user = user;
+
+        // If email is not verified, and this is NOT the "/me" profile route, block access for non-admins
+        const isProfileRoute = req.originalUrl === '/api/firebase-auth/me' || req.path === '/me';
+        if (!decodedToken.email_verified && !isProfileRoute) {
+            const userRoles = await UserRole.find({ user: user._id }).populate('role');
+            const roles = userRoles.map((item) => item.role?.name).filter(Boolean);
+            const isAdmin = roles.includes('ADMIN') || roles.includes('SUPER_ADMIN');
+
+            if (!isAdmin) {
+                await SecurityLog.create({
+                    user: user._id,
+                    event: 'BLOCKED_UNVERIFIED_EMAIL',
+                    description: `Blocked access attempt to unverified account: ${user.email}. URL: ${req.originalUrl}`,
+                    ipAddress: req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1',
+                    userAgent: req.headers['user-agent'] || 'unknown'
+                });
+                return sendError(res, 'Email verification required. Please verify your email to access this resource.', 403);
+            }
+        }
 
         next();
     } catch (error) {

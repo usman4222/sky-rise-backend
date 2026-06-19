@@ -17,6 +17,7 @@ import {
 
 import { firebaseProtect } from '../middleware/firebaseAuth.js';
 import { restrictTo } from '../middleware/rbac.js';
+import { adminRateLimiter } from '../middleware/security.js';
 
 const router = express.Router();
 
@@ -37,10 +38,11 @@ const {
   getAdminDashboard
 } = adminController;
 
-// Firebase auth + ADMIN / SUPER_ADMIN role protection
+// Firebase auth + ADMIN / SUPER_ADMIN role protection with admin rate limiting
 const adminMiddleware = [
   firebaseProtect,
-  restrictTo('ADMIN', 'SUPER_ADMIN')
+  restrictTo('ADMIN', 'SUPER_ADMIN'),
+  adminRateLimiter
 ];
 
 // ===============================

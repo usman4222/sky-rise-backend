@@ -5,10 +5,11 @@ import authController from '../controllers/auth.controller.js';
 const { register, login, logout, getProfile, submitKyc } = authController;
 
 import { protect } from '../middleware/auth.js';
+import { authRateLimiter } from '../middleware/security.js';
 
 // Public Routes
-router.post('/register', register);
-router.post('/login', login);
+router.post('/register', authRateLimiter, register);
+router.post('/login', authRateLimiter, login);
 
 // Private Routes (Require Session JWT)
 router.post('/logout', protect, logout);

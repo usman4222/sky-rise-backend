@@ -13,6 +13,7 @@ const walletHistorySchema = new mongoose.Schema(
       type: String,
       enum: [
         'deposit',
+        'adminAllocated',
         'freeRegBonus',
         'roi',
         'referral',

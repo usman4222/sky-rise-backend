@@ -1,7 +1,9 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import 'dotenv/config';
 import connectDB from './config/db.js';
+import { generalRateLimiter, xssSanitizer, noSqlSanitizer } from './middleware/security.js';
 import rewardEngine from './utils/rewardEngine.js';
 
 // Routes
@@ -82,16 +84,41 @@ import Banner from './models/system/banner.model.js';
 
 const app = express();
 
+// 1. Trust first reverse proxy (e.g. Cloudflare) for accurate client IP tracking
+app.set('trust proxy', 1);
+
+// 2. Helmet for secure HTTP headers configuration
+app.use(helmet());
+
+// 3. Strict CORS configuration
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',')
+  : [process.env.FRONTEND_URL || 'http://localhost:5173'];
+
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || '*',
+    origin: (origin, callback) => {
+      // Allow requests with no origin in non-production environments
+      if (!origin && process.env.NODE_ENV !== 'production') return callback(null, true);
+      if (!origin && process.env.NODE_ENV === 'production') return callback(null, false);
+      
+      if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
     credentials: true
   })
 );
 
+// 4. Rate Limiter for general endpoints to prevent brute forcing and DoS
+app.use('/api', generalRateLimiter);
+
+// 5. Secure size limits on payloads to prevent memory exhaustion
 app.use(
   express.json({
-    limit: '10mb',
+    limit: '2mb',
     verify: (req, res, buf) => {
       req.rawBody = buf;
     }
@@ -100,11 +127,18 @@ app.use(
 app.use(
   express.urlencoded({
     extended: true,
+    limit: '2mb',
     verify: (req, res, buf) => {
       req.rawBody = buf;
     }
   })
 );
+
+// 6. NoSQL query sanitization to prevent injection (Express 5 Safe)
+app.use(noSqlSanitizer);
+
+// 7. Input XSS Sanitizer for requests
+app.use(xssSanitizer);
 
 connectDB();
 

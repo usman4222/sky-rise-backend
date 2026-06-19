@@ -91,7 +91,7 @@ const ensureUserRole = async (userId) => {
     return userRole;
 };
 
-const buildFirebaseUserResponse = async (user) => {
+const buildFirebaseUserResponse = async (user, emailVerified = false) => {
     const wallet = await Wallet.findOne({ user: user._id });
 
     const userRoles = await UserRole.find({ user: user._id }).populate('role');
@@ -121,6 +121,7 @@ const buildFirebaseUserResponse = async (user) => {
         firebaseUid: user.firebaseUid,
         name: user.name,
         email: user.email,
+        emailVerified: emailVerified,
         phone: user.phone,
         imageUrl: user.imageUrl || null,
         referralCode: user.referralCode,
@@ -152,6 +153,7 @@ const buildFirebaseUserResponse = async (user) => {
 
         wallets: {
             deposit: wallet?.deposit || 0,
+            adminAllocated: wallet?.adminAllocated || 0,
             roi: wallet?.roi || 0,
             referral: wallet?.referral || 0,
             bonusActivation: wallet?.bonusActivation || 0,
@@ -368,7 +370,7 @@ export const syncFirebaseUser = async (req, res) => {
         if (existingUser) {
             await ensureUserRole(existingUser._id);
 
-            const userPayload = await buildFirebaseUserResponse(existingUser);
+            const userPayload = await buildFirebaseUserResponse(existingUser, decodedToken.email_verified || false);
 
             return successResponse(res, 'Firebase user already synced', {
                 user: userPayload
@@ -383,7 +385,7 @@ export const syncFirebaseUser = async (req, res) => {
 
             await ensureUserRole(emailExists._id);
 
-            const userPayload = await buildFirebaseUserResponse(emailExists);
+            const userPayload = await buildFirebaseUserResponse(emailExists, decodedToken.email_verified || false);
 
             return successResponse(res, 'Firebase account linked with existing MongoDB user', {
                 user: userPayload
@@ -483,7 +485,7 @@ export const syncFirebaseUser = async (req, res) => {
             userAgent: req.headers['user-agent'] || 'unknown'
         });
 
-        const userPayload = await buildFirebaseUserResponse(user);
+        const userPayload = await buildFirebaseUserResponse(user, decodedToken.email_verified || false);
 
         return successResponse(
             res,
@@ -534,6 +536,7 @@ export const getFirebaseProfile = async (req, res) => {
                 firebaseUid: user.firebaseUid,
                 name: user.name,
                 email: user.email,
+                emailVerified: req.firebaseUser?.email_verified || false,
                 phone: user.phone,
                 imageUrl: user.imageUrl || null,
                 referralCode: user.referralCode,
@@ -565,6 +568,7 @@ export const getFirebaseProfile = async (req, res) => {
 
                 wallets: {
                     deposit: wallet?.deposit || 0,
+                    adminAllocated: wallet?.adminAllocated || 0,
                     roi: wallet?.roi || 0,
                     referral: wallet?.referral || 0,
                     bonusActivation: wallet?.bonusActivation || 0,

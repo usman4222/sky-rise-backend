@@ -4,6 +4,7 @@ import Withdrawal from '../models/finance/withdrawal.model.js';
 import Wallet from '../models/finance/wallet.model.js';
 
 import WalletHistory from '../models/finance/wallet_history.model.js';
+import AdminBalanceHistory from '../models/finance/admin_balance_history.model.js';
 import PaymentMethod from '../models/finance/payment_method.model.js';
 import WeeklySalaryRequest from '../models/finance/weekly_salary_request.model.js';
 import WithdrawalRequest from '../models/finance/withdrawal_request.model.js';
@@ -50,7 +51,8 @@ const normalizePackagePayload = (payload) => {
     isHidden:
       payload.isHidden !== undefined ? Boolean(payload.isHidden) : false,
     isActive:
-      payload.isActive !== undefined ? Boolean(payload.isActive) : true
+      payload.isActive !== undefined ? Boolean(payload.isActive) : true,
+    packageTarget: payload.packageTarget || 'user'
   };
 };
 
@@ -65,6 +67,10 @@ const validatePackagePayload = (pkg) => {
   if (pkg.maxAmount < pkg.minAmount) return 'maxAmount must be greater than or equal to minAmount';
   if (pkg.startRoi < 0) return 'startRoi cannot be negative';
   if (pkg.maxRoi < pkg.startRoi) return 'maxRoi must be greater than or equal to startRoi';
+
+  if (pkg.packageTarget && !['user', 'marketer'].includes(pkg.packageTarget)) {
+    return 'packageTarget must be either user or marketer';
+  }
 
   return null;
 };
@@ -419,7 +425,8 @@ const updatePackage = async (req, res) => {
       'earlyWithdrawalPenaltyPercent',
       'earlyWithdrawalPenaltyMonths',
       'isHidden',
-      'isActive'
+      'isActive',
+      'packageTarget'
     ];
 
     const updateData = {};
@@ -736,6 +743,19 @@ const getAdminDashboard = async (req, res) => {
       isActive: true
     });
 
+    // Total admin manual deposit & allocated funds
+    const totalAdminDepositAgg = await AdminBalanceHistory.aggregate([
+      { $match: { balanceType: 'deposit', amountAdded: { $gt: 0 } } },
+      { $group: { _id: null, total: { $sum: '$amountAdded' } } }
+    ]);
+    const totalAdminDeposit = totalAdminDepositAgg[0] ? totalAdminDepositAgg[0].total : 0;
+
+    const totalAdminAllocatedAgg = await AdminBalanceHistory.aggregate([
+      { $match: { balanceType: 'adminAllocated', amountAdded: { $gt: 0 } } },
+      { $group: { _id: null, total: { $sum: '$amountAdded' } } }
+    ]);
+    const totalAdminAllocated = totalAdminAllocatedAgg[0] ? totalAdminAllocatedAgg[0].total : 0;
+
     return successResponse(res, 'Admin dashboard metrics retrieved successfully', {
       stats: {
         usersCount,
@@ -744,6 +764,8 @@ const getAdminDashboard = async (req, res) => {
         totalPaidWithdrawalAmount: totalPaidWithdrawals,
         totalPendingWithdrawalAmount,
         totalApprovedSalaryAmount,
+        totalAdminDeposit,
+        totalAdminAllocated,
         pendingDeposits,
         pendingWithdrawals,
         pendingWeeklySalaryRequests,

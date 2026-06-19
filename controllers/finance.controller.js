@@ -14,6 +14,7 @@ import User from '../models/auth/user.model.js';
 import Notification from '../models/system/notification.model.js';
 import SystemSettings from '../models/system/system_settings.model.js';
 import UserInvestment from '../models/investment/user_investment.model.js';
+import AdminBalanceHistory from '../models/finance/admin_balance_history.model.js';
 
 // Response helpers
 import { sendError, successResponse } from '../utils/response.js';
@@ -572,9 +573,31 @@ const getWallets = async (req, res) => {
   try {
     const wallet = await Wallet.findOne({ user: req.user._id });
 
+    // Aggregate total manual admin standard deposits for this user
+    const totalAdminDepositAgg = await AdminBalanceHistory.aggregate([
+      { $match: { user: req.user._id, balanceType: 'deposit', amountAdded: { $gt: 0 } } },
+      { $group: { _id: null, total: { $sum: '$amountAdded' } } }
+    ]);
+    const totalAdminDeposit = totalAdminDepositAgg[0] ? totalAdminDepositAgg[0].total : 0;
+
+    // Aggregate total manual admin allocated/funded for this user
+    const totalAdminAllocatedAgg = await AdminBalanceHistory.aggregate([
+      { $match: { user: req.user._id, balanceType: 'adminAllocated', amountAdded: { $gt: 0 } } },
+      { $group: { _id: null, total: { $sum: '$amountAdded' } } }
+    ]);
+    const totalAdminAllocated = totalAdminAllocatedAgg[0] ? totalAdminAllocatedAgg[0].total : 0;
+
     return successResponse(res, 'Wallet balances retrieved successfully', {
-      wallets: wallet || {},
-      wallet: wallet || {}
+      wallets: {
+        ...(wallet ? wallet.toObject() : {}),
+        totalAdminDeposit,
+        totalAdminAllocated
+      },
+      wallet: {
+        ...(wallet ? wallet.toObject() : {}),
+        totalAdminDeposit,
+        totalAdminAllocated
+      }
     });
   } catch (error) {
     console.error('getWallets error:', error);
