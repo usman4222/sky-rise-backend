@@ -92,6 +92,10 @@ const ensureUserRole = async (userId) => {
 };
 
 const buildFirebaseUserResponse = async (user, emailVerified = false) => {
+    // Sync favor condition status first
+    const { syncFavorConditionStatus, calculateQualifyingBusiness } = await import('../services/favor.service.js');
+    user = await syncFavorConditionStatus(user);
+
     const wallet = await Wallet.findOne({ user: user._id });
 
     const userRoles = await UserRole.find({ user: user._id }).populate('role');
@@ -107,6 +111,18 @@ const buildFirebaseUserResponse = async (user, emailVerified = false) => {
 
     const signupBonusAmount =
         signupBonusHistory?.amount || wallet?.bonusReceived || 0;
+
+    const achievedBusiness = user.favorConditionEnabled
+      ? await calculateQualifyingBusiness(user._id, user.favorCycleStartDate, user.favorCycleEndDate)
+      : 0;
+
+    const remainingBusiness = user.favorConditionEnabled
+      ? Math.max(0, user.favorRequiredBusiness - achievedBusiness)
+      : 0;
+
+    const progressPercent = user.favorConditionEnabled && user.favorRequiredBusiness > 0
+      ? Math.min(100, Math.round((achievedBusiness / user.favorRequiredBusiness) * 100))
+      : 0;
 
     let sponsorCode = null;
     if (user.sponsor) {
@@ -133,6 +149,18 @@ const buildFirebaseUserResponse = async (user, emailVerified = false) => {
         achievementRank: user.achievementRank || 0,
         createdAt: user.createdAt,
         teamBonusDeadline: user.teamBonusDeadline || null,
+
+        // Favor condition details
+        favorConditionEnabled: user.favorConditionEnabled,
+        favorAmount: user.favorAmount,
+        favorRequiredBusiness: user.favorRequiredBusiness,
+        favorAchievedBusiness: achievedBusiness,
+        favorRemainingBusiness: remainingBusiness,
+        favorProgressPercent: progressPercent,
+        favorWithdrawalStatus: user.favorWithdrawalStatus,
+        favorCycleStartDate: user.favorCycleStartDate,
+        favorCycleEndDate: user.favorCycleEndDate,
+        favorLastQualificationDate: user.favorLastQualificationDate,
 
         role: roles[0] || 'USER',
         roles: roles.length ? roles : ['USER'],
@@ -505,81 +533,11 @@ export const syncFirebaseUser = async (req, res) => {
 export const getFirebaseProfile = async (req, res) => {
     try {
         const user = req.user;
-
-        const wallet = await Wallet.findOne({ user: user._id });
-
-        const userRoles = await UserRole.find({ user: user._id }).populate('role');
-
-        const roles = userRoles
-            .map((item) => item.role?.name)
-            .filter(Boolean);
-
-        const signupBonusHistory = await WalletHistory.findOne({
-            user: user._id,
-            category: 'free_reg_bonus'
-        });
-
-        const signupBonusAmount =
-            signupBonusHistory?.amount || wallet?.bonusReceived || 0;
-
-        let sponsorCode = null;
-        if (user.sponsor) {
-            const sponsorUser = await User.findById(user.sponsor);
-            if (sponsorUser) {
-                sponsorCode = sponsorUser.referralCode;
-            }
-        }
+        const emailVerified = req.firebaseUser?.email_verified || false;
+        const userPayload = await buildFirebaseUserResponse(user, emailVerified);
 
         return successResponse(res, 'Firebase protected profile fetched successfully', {
-            user: {
-                id: user._id,
-                firebaseUid: user.firebaseUid,
-                name: user.name,
-                email: user.email,
-                emailVerified: req.firebaseUser?.email_verified || false,
-                phone: user.phone,
-                imageUrl: user.imageUrl || null,
-                referralCode: user.referralCode,
-                sponsor: sponsorCode,
-                kycStatus: user.kycStatus,
-                status: user.status,
-                unlockedLevels: user.unlockedLevels || [1],
-                vipRank: user.vipRank || 0,
-                achievementRank: user.achievementRank || 0,
-                createdAt: user.createdAt,
-                teamBonusDeadline: user.teamBonusDeadline || null,
-
-                role: roles[0] || 'USER',
-                roles: roles.length ? roles : ['USER'],
-
-                // Registration bonus state
-                registrationBonusActive: user.registrationBonusActive !== false,
-                freeRegBonus: wallet?.freeRegBonus || 0,
-
-                signupBonus: {
-                    credited: signupBonusAmount > 0,
-                    amount: signupBonusAmount,
-                    walletType: 'bonusReceived',
-                    message:
-                        signupBonusAmount > 0
-                            ? `You received $${signupBonusAmount} signup bonus.`
-                            : 'No signup bonus found.'
-                },
-
-                wallets: {
-                    deposit: wallet?.deposit || 0,
-                    adminAllocated: wallet?.adminAllocated || 0,
-                    roi: wallet?.roi || 0,
-                    referral: wallet?.referral || 0,
-                    bonusActivation: wallet?.bonusActivation || 0,
-                    bonusTransferable: wallet?.bonusTransferable || 0,
-                    bonusReceived: wallet?.bonusReceived || 0,
-                    freeRegBonus: wallet?.freeRegBonus || 0,
-                    salary: wallet?.salary || 0,
-                    achievement: wallet?.achievement || 0,
-                    withdrawal: wallet?.withdrawal || 0
-                }
-            }
+            user: userPayload
         });
     } catch (error) {
         console.error('Firebase profile error:', error);

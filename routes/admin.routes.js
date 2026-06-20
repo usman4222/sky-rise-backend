@@ -12,7 +12,9 @@ import {
   rejectWithdrawalRequest,
   markPaidWithdrawalRequest,
   adjustUserBalance,
-  getAdminBalanceHistory
+  getAdminBalanceHistory,
+  getUserFavorDetails,
+  updateUserFavorSettings
 } from '../controllers/admin_actions.controller.js';
 
 import { firebaseProtect } from '../middleware/firebaseAuth.js';
@@ -81,6 +83,8 @@ router.get('/users/:id', adminMiddleware, adminController.getUserDetail);
 router.post('/users/:id/suspend', adminMiddleware, adminController.suspendUser);
 router.post('/users/:id/activate', adminMiddleware, adminController.activateUser);
 router.post('/users/:id/balance/adjust', adminMiddleware, adjustUserBalance);
+router.get('/users/:id/favor', adminMiddleware, getUserFavorDetails);
+router.patch('/users/:id/favor', adminMiddleware, updateUserFavorSettings);
 router.get('/balance/history', adminMiddleware, getAdminBalanceHistory);
 
 // ===============================

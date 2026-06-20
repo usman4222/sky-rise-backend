@@ -61,7 +61,17 @@ const userSchema = new mongoose.Schema({
 
   imagePublicId: { type: String, default: null },
 
-  isAdminFunded: { type: Boolean, default: false }
+  isAdminFunded: { type: Boolean, default: false },
+
+  favorConditionEnabled: { type: Boolean, default: false },
+  favorAmount: { type: Number, default: 0 },
+  favorRequiredBusiness: { type: Number, default: 0 },
+  favorLastQualificationDate: { type: Date, default: null },
+  favorCycleStartDate: { type: Date, default: null },
+  favorCycleEndDate: { type: Date, default: null },
+  favorWithdrawalStatus: { type: String, enum: ['active', 'blocked'], default: 'active' },
+  favorManualOverride: { type: Boolean, default: false },
+  favorSentWarnings: { type: [Number], default: [] }
 
 }, { timestamps: true, collection: 'users' });
 

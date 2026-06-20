@@ -484,9 +484,12 @@ export const adjustUserBalance = async (req, res) => {
     wallet[balanceType] = balanceAfter;
     await wallet.save();
 
-    // If adding to adminAllocated balance, flag the target user as admin-funded
-    if (balanceType === 'adminAllocated' && action === 'add') {
-      targetUser.isAdminFunded = true;
+    // If adding or deducting from adminAllocated balance, update the user's favorAmount
+    if (balanceType === 'adminAllocated') {
+      targetUser.favorAmount = wallet.adminAllocated || 0;
+      if (action === 'add') {
+        targetUser.isAdminFunded = true;
+      }
       await targetUser.save();
     }
 
@@ -598,6 +601,189 @@ export const getAdminBalanceHistory = async (req, res) => {
   } catch (error) {
     console.error('getAdminBalanceHistory error:', error);
     return sendError(res, 'Failed to get admin balance history', 500, error);
+  }
+};
+
+// ==========================================
+// LEADER FAVOR ACCOUNT CONDITION SYSTEM
+// ==========================================
+
+import { calculateQualifyingBusiness, syncFavorConditionStatus } from '../services/favor.service.js';
+
+// @desc    Get user's Favor Account Condition details
+// @route   GET /api/admin/users/:id/favor
+// @access  Admin/SuperAdmin
+export const getUserFavorDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+    let targetUser = await User.findById(id);
+    if (!targetUser) {
+      return sendError(res, 'User not found', 404);
+    }
+
+    // Sync status first
+    targetUser = await syncFavorConditionStatus(targetUser);
+
+    const wallet = await Wallet.findOne({ user: id }) || {};
+
+    // Calculate current cycle achieved business
+    const achievedBusiness = targetUser.favorConditionEnabled
+      ? await calculateQualifyingBusiness(targetUser._id, targetUser.favorCycleStartDate, targetUser.favorCycleEndDate)
+      : 0;
+
+    const remainingBusiness = targetUser.favorConditionEnabled
+      ? Math.max(0, targetUser.favorRequiredBusiness - achievedBusiness)
+      : 0;
+
+    const progressPercent = targetUser.favorConditionEnabled && targetUser.favorRequiredBusiness > 0
+      ? Math.min(100, Math.round((achievedBusiness / targetUser.favorRequiredBusiness) * 100))
+      : 0;
+
+    return successResponse(res, 'Favor Account condition details retrieved successfully', {
+      favorConditionEnabled: targetUser.favorConditionEnabled,
+      favorAmount: targetUser.favorAmount,
+      adminAllocatedBalance: wallet.adminAllocated || 0,
+      favorRequiredBusiness: targetUser.favorRequiredBusiness,
+      achievedBusiness,
+      remainingBusiness,
+      progressPercent,
+      favorWithdrawalStatus: targetUser.favorWithdrawalStatus,
+      favorCycleStartDate: targetUser.favorCycleStartDate,
+      favorCycleEndDate: targetUser.favorCycleEndDate,
+      favorLastQualificationDate: targetUser.favorLastQualificationDate,
+      favorSentWarnings: targetUser.favorSentWarnings
+    });
+  } catch (error) {
+    console.error('getUserFavorDetails error:', error);
+    return sendError(res, 'Failed to retrieve user favor details', 500, error);
+  }
+};
+
+// @desc    Update user's Favor Account Condition settings
+// @route   PATCH /api/admin/users/:id/favor
+// @access  Admin/SuperAdmin
+export const updateUserFavorSettings = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      favorConditionEnabled,
+      favorWithdrawalStatus,
+      favorCycleStartDate,
+      favorCycleEndDate,
+      favorRequiredBusiness,
+      resetCycle,
+      extendDeadlineDays
+    } = req.body;
+
+    let targetUser = await User.findById(id);
+    if (!targetUser) {
+      return sendError(res, 'User not found', 404);
+    }
+
+    // 1. Toggle condition
+    if (favorConditionEnabled !== undefined) {
+      const isEnabling = Boolean(favorConditionEnabled);
+      if (isEnabling && !targetUser.favorConditionEnabled) {
+        // Initialize cycle starting now
+        targetUser.favorConditionEnabled = true;
+        targetUser.favorCycleStartDate = new Date();
+        const duration = process.env.ROI_TEST_MODE === 'true' ? 3 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+        targetUser.favorCycleEndDate = new Date(targetUser.favorCycleStartDate.getTime() + duration);
+        // Default target is favorAmount
+        targetUser.favorRequiredBusiness = targetUser.favorAmount;
+        targetUser.favorWithdrawalStatus = 'active';
+        targetUser.favorManualOverride = false;
+        targetUser.favorSentWarnings = [];
+      } else if (!isEnabling && targetUser.favorConditionEnabled) {
+        targetUser.favorConditionEnabled = false;
+        targetUser.favorWithdrawalStatus = 'active'; // Always active when disabled
+        targetUser.favorManualOverride = false;
+      }
+    }
+
+    // 2. Reset Cycle
+    if (resetCycle) {
+      targetUser.favorCycleStartDate = new Date();
+      const duration = process.env.ROI_TEST_MODE === 'true' ? 3 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+      targetUser.favorCycleEndDate = new Date(targetUser.favorCycleStartDate.getTime() + duration);
+      targetUser.favorRequiredBusiness = targetUser.favorAmount;
+      targetUser.favorWithdrawalStatus = 'active';
+      targetUser.favorManualOverride = false;
+      targetUser.favorSentWarnings = [];
+    }
+
+    // 3. Extend Deadline manually
+    if (extendDeadlineDays !== undefined) {
+      const days = Number(extendDeadlineDays);
+      if (!isNaN(days) && days > 0) {
+        const currentEnd = targetUser.favorCycleEndDate || new Date();
+        targetUser.favorCycleEndDate = new Date(currentEnd.getTime() + days * 24 * 60 * 60 * 1000);
+        // If they were blocked, extend the deadline and unblock them!
+        if (targetUser.favorCycleEndDate > new Date()) {
+          targetUser.favorWithdrawalStatus = 'active';
+        }
+      }
+    }
+
+    // 4. Edit required business manually
+    if (favorRequiredBusiness !== undefined) {
+      const numTarget = Number(favorRequiredBusiness);
+      if (!isNaN(numTarget) && numTarget >= 0) {
+        targetUser.favorRequiredBusiness = numTarget;
+      }
+    }
+
+    // 5. Override withdrawal status
+    if (favorWithdrawalStatus !== undefined && ['active', 'blocked'].includes(favorWithdrawalStatus)) {
+      targetUser.favorWithdrawalStatus = favorWithdrawalStatus;
+      if (favorWithdrawalStatus === 'active') {
+        if (targetUser.favorCycleEndDate && new Date() > targetUser.favorCycleEndDate) {
+          targetUser.favorManualOverride = true;
+        } else {
+          targetUser.favorManualOverride = false;
+        }
+      } else {
+        targetUser.favorManualOverride = false;
+      }
+    }
+
+    // 6. Manual overrides for dates if provided directly
+    if (favorCycleStartDate) {
+      targetUser.favorCycleStartDate = new Date(favorCycleStartDate);
+    }
+    if (favorCycleEndDate) {
+      targetUser.favorCycleEndDate = new Date(favorCycleEndDate);
+      if (targetUser.favorCycleEndDate > new Date()) {
+        targetUser.favorWithdrawalStatus = 'active';
+        targetUser.favorManualOverride = false;
+      }
+    }
+
+    await targetUser.save();
+
+    // Log action to SecurityLog
+    await SecurityLog.create({
+      user: req.user._id,
+      event: 'ADMIN_FAVOR_SETTINGS_UPDATE',
+      description: `Admin ${req.user.email} updated Favor settings for user ${targetUser.email}.`,
+      ipAddress: req.ip || '127.0.0.1',
+      userAgent: req.headers['user-agent'] || 'unknown'
+    });
+
+    // Notify user of the change
+    await Notification.create({
+      user: targetUser._id,
+      title: '💼 Favor Account Settings Updated',
+      message: `Your administrator updated your Favor Account business condition settings. Current Status: ${targetUser.favorWithdrawalStatus.toUpperCase()}`,
+      category: 'system'
+    });
+
+    return successResponse(res, 'Favor Account condition settings updated successfully', {
+      user: targetUser
+    });
+  } catch (error) {
+    console.error('updateUserFavorSettings error:', error);
+    return sendError(res, 'Failed to update user favor settings', 500, error);
   }
 };
 

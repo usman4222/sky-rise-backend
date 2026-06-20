@@ -916,10 +916,14 @@ const getUserDetail = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const userObj = await User.findById(id).populate('sponsor', 'name email referralCode');
+    let userObj = await User.findById(id).populate('sponsor', 'name email referralCode');
     if (!userObj) {
       return sendError(res, 'User not found', 404);
     }
+
+    // Sync favor condition status
+    const { syncFavorConditionStatus } = await import('../services/favor.service.js');
+    userObj = await syncFavorConditionStatus(userObj);
 
     const wallet = await Wallet.findOne({ user: id }) || {};
     const businessReport = await BusinessReport.findOne({ user: id }) || {};

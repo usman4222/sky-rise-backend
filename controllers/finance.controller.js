@@ -187,6 +187,15 @@ const submitWithdrawal = async (req, res) => {
       );
     }
 
+    // Check Favor Account Monthly condition block
+    if (req.user.favorConditionEnabled && req.user.favorWithdrawalStatus === 'blocked') {
+      return sendError(
+        res,
+        'Withdrawal Suspended: Monthly 1X business target not completed.',
+        403
+      );
+    }
+
     if (!mongoose.Types.ObjectId.isValid(withdrawalAccountId)) {
       return sendError(res, 'Invalid withdrawal account ID format', 400);
     }

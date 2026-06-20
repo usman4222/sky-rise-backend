@@ -117,9 +117,9 @@ app.use(
     origin: (origin, callback) => {
       // Allow requests with no origin (like Postman or local curl scripts)
       if (!origin) return callback(null, true);
-      
+
       const isAllowedVercel = origin.endsWith('.vercel.app') && origin.includes('sky-rise');
-      
+
       if (uniqueOrigins.indexOf(origin) !== -1 || uniqueOrigins.includes('*') || isAllowedVercel) {
         callback(null, true);
       } else {
@@ -386,6 +386,18 @@ setInterval(async () => {
     console.error('❌ Scheduled VIP salary payout failed:', error.message);
   }
 }, vipIntervalMs);
+
+// Scheduled Favor Account condition check
+import { checkFavorWarningsAndExpiring } from './services/favor.service.js';
+const checkFavorIntervalMs = process.env.ROI_TEST_MODE === 'true' ? 15000 : 24 * 60 * 60 * 1000;
+console.log(`⏳ Favor Account condition checker loaded. Runs every ${process.env.ROI_TEST_MODE === 'true' ? '15 seconds' : '24 hours'}.`);
+setInterval(async () => {
+  try {
+    await checkFavorWarningsAndExpiring();
+  } catch (error) {
+    console.error('❌ Scheduled Favor Account check failed:', error.message);
+  }
+}, checkFavorIntervalMs);
 
 
 const PORT = process.env.PORT || 5000;
