@@ -101,7 +101,8 @@ const allowedOrigins = [
   'http://localhost:5174',
   'http://localhost:4173',
   'https://sky-rise-wine.vercel.app',
-  'https://www.skyrisefuture.com'
+  'https://www.skyrisefuture.com',
+  'https://skyrisefuture.com'
 ];
 
 if (process.env.ALLOWED_ORIGINS) {
