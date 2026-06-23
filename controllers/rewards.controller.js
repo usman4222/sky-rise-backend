@@ -32,7 +32,11 @@ const getVipStatus = async (req, res) => {
       const directId = direct.user._id;
 
       // Sum active investments of direct referral
-      const activeSelfInvestments = await UserInvestment.find({ user: directId, status: 'active' });
+      const activeSelfInvestments = await UserInvestment.find({
+        user: directId,
+        status: 'active',
+        packageType: { $ne: 'Admin Funded Package' }
+      });
       const legOwnerInvestment = activeSelfInvestments.reduce((sum, inv) => sum + inv.amount, 0);
 
       // Fetch all descendants in this leg
@@ -42,7 +46,8 @@ const getVipStatus = async (req, res) => {
       // Sum active investments of descendants
       const downlineInvestments = await UserInvestment.find({
         user: { $in: descendantIds },
-        status: 'active'
+        status: 'active',
+        packageType: { $ne: 'Admin Funded Package' }
       });
 
       const legDownlineVolume = downlineInvestments.reduce((sum, inv) => sum + inv.amount, 0);
@@ -200,7 +205,11 @@ const getLeadershipStatus = async (req, res) => {
     const userId = req.user._id;
 
     // 1. Fetch active investments of the user
-    const activeInvestments = await UserInvestment.find({ user: userId, status: 'active' });
+    const activeInvestments = await UserInvestment.find({
+      user: userId,
+      status: 'active',
+      packageType: { $ne: 'Admin Funded Package' }
+    });
     const autoReinvestOn = activeInvestments.length > 0 && activeInvestments.every(inv => inv.autoReinvest === true);
     const totalSelfInvestment = activeInvestments.reduce((sum, inv) => sum + inv.amount, 0);
 
@@ -209,7 +218,8 @@ const getLeadershipStatus = async (req, res) => {
     const directIds = directs.map(d => d.user);
     const activeDirectIds = await UserInvestment.distinct('user', {
       user: { $in: directIds },
-      status: 'active'
+      status: 'active',
+      packageType: { $ne: 'Admin Funded Package' }
     });
     const activeDirectsCount = activeDirectIds.length;
 

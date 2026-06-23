@@ -49,7 +49,8 @@ const getDownline = async (req, res) => {
     const directUserIds = directs.map(d => d.user?._id).filter(Boolean);
     const activeDirects = await UserInvestment.distinct('user', {
       user: { $in: directUserIds },
-      status: 'active'
+      status: 'active',
+      packageType: { $ne: 'Admin Funded Package' }
     });
     const activeDirectsCount = activeDirects.length;
 
@@ -62,7 +63,8 @@ const getDownline = async (req, res) => {
     // Fetch active investments for all downline users
     const investments = await UserInvestment.find({
       user: { $in: downlineUserIds },
-      status: 'active'
+      status: 'active',
+      packageType: { $ne: 'Admin Funded Package' }
     });
 
     // Fetch approved withdrawals for all downline users
@@ -182,7 +184,8 @@ const unlockLevel = async (req, res) => {
     // Count how many directs have active investments
     const activeDirectsCount = await UserInvestment.distinct('user', {
       user: { $in: directIds },
-      status: 'active'
+      status: 'active',
+      packageType: { $ne: 'Admin Funded Package' }
     });
 
     if (activeDirectsCount.length < requiredActiveDirects) {

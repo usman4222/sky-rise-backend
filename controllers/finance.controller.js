@@ -647,6 +647,96 @@ const getLedgerHistory = async (req, res) => {
   }
 };
 
+// @desc    Get user's daily earnings history (last 30 days)
+// @route   GET /api/finance/earnings/history
+// @access  Private
+const getEarningsHistory = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const earningWallets = ['roi', 'referral', 'bonusReceived', 'salary', 'achievement'];
+    
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    thirtyDaysAgo.setHours(0, 0, 0, 0); // Start of day 30 days ago
+    
+    // Find all credit records of earnings in the last 30 days
+    const history = await WalletHistory.find({
+      user: userId,
+      walletType: { $in: earningWallets },
+      type: 'credit',
+      createdAt: { $gte: thirtyDaysAgo }
+    }).sort({ createdAt: 1 });
+    
+    // Get cumulative sum of earnings BEFORE these 30 days
+    const totalEarningsBeforeAgg = await WalletHistory.aggregate([
+      {
+        $match: {
+          user: userId,
+          walletType: { $in: earningWallets },
+          type: 'credit',
+          createdAt: { $lt: thirtyDaysAgo }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: '$amount' }
+        }
+      }
+    ]);
+    
+    let cumulativeEarnings = totalEarningsBeforeAgg[0] ? totalEarningsBeforeAgg[0].total : 0;
+    
+    // Create daily buckets for the last 30 days
+    const dates = [];
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
+      // Key is YYYY-MM-DD
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const key = `${year}-${month}-${day}`;
+      dates.push({
+        dateStr,
+        key,
+        dailyAmount: 0
+      });
+    }
+    
+    // Populate buckets
+    history.forEach(item => {
+      const d = new Date(item.createdAt);
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const key = `${year}-${month}-${day}`;
+      
+      const match = dates.find(b => b.key === key);
+      if (match) {
+        match.dailyAmount += item.amount;
+      }
+    });
+    
+    // Accumulate
+    const chartData = dates.map(d => {
+      cumulativeEarnings += d.dailyAmount;
+      return {
+        date: d.dateStr,
+        amount: Number(cumulativeEarnings.toFixed(2))
+      };
+    });
+    
+    return successResponse(res, 'Earnings history retrieved successfully', {
+      chartData
+    });
+  } catch (error) {
+    console.error('getEarningsHistory error:', error);
+    return sendError(res, 'Internal earnings history error', 500, error);
+  }
+};
+
 export default {
   getPaymentMethods,
   submitDeposit,
@@ -655,5 +745,6 @@ export default {
   getWithdrawalAccounts,
   transferTeamBonus,
   getWallets,
-  getLedgerHistory
+  getLedgerHistory,
+  getEarningsHistory
 };

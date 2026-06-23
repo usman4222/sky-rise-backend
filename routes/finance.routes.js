@@ -10,7 +10,8 @@ const {
   getWithdrawalAccounts,
   transferTeamBonus,
   getWallets,
-  getLedgerHistory
+  getLedgerHistory,
+  getEarningsHistory
 } = financeController;
 
 import { firebaseProtect } from '../middleware/firebaseAuth.js';
@@ -24,5 +25,6 @@ router.get('/withdrawal-accounts', firebaseProtect, getWithdrawalAccounts);
 router.post('/transfer-bonus', firebaseProtect, financeRateLimiter, requestLockGuard, transferTeamBonus);
 router.get('/wallets', firebaseProtect, getWallets);
 router.get('/history', firebaseProtect, getLedgerHistory);
+router.get('/earnings/history', firebaseProtect, getEarningsHistory);
 
 export default router;
