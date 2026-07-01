@@ -25,13 +25,13 @@ export const addPaymentMethod = async (req, res) => {
       return sendError(res, 'Method type, account title, and account number are required', 400);
     }
 
-    if (!['bank', 'raast', 'jazzcash', 'easypaisa', 'usdt_trc20'].includes(methodType)) {
+    if (!['bank', 'raast', 'jazzcash', 'easypaisa', 'usdt_trc20', 'usdt_bep20'].includes(methodType)) {
       return sendError(res, 'Invalid payment method type', 400);
     }
 
     // Specific validation rules
-    if (methodType === 'usdt_trc20' && !walletAddress) {
-      return sendError(res, 'Wallet address is required for USDT BEP20', 400);
+    if ((methodType === 'usdt_trc20' || methodType === 'usdt_bep20') && !walletAddress) {
+      return sendError(res, 'Wallet address is required for USDT payment methods', 400);
     }
 
     if (methodType === 'bank' && !bankName) {
@@ -59,11 +59,11 @@ export const addPaymentMethod = async (req, res) => {
       methodType,
       accountTitle,
       accountNumber,
-      walletAddress: methodType === 'usdt_trc20' ? walletAddress : (walletAddress || accountNumber),
+      walletAddress: (methodType === 'usdt_trc20' || methodType === 'usdt_bep20') ? walletAddress : (walletAddress || accountNumber),
       bankName,
       iban,
       phoneNumber,
-      network: methodType === 'usdt_trc20' ? (network || 'TRC20') : null,
+      network: methodType === 'usdt_trc20' ? (network || 'TRC20') : (methodType === 'usdt_bep20' ? (network || 'BEP20') : null),
       isDefault: finalIsDefault,
       status: 'active'
     });

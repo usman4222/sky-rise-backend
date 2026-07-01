@@ -477,8 +477,15 @@ const getMyInvestments = async (req, res) => {
           inv.claimExpiresAt = null;
         }
 
-        const lastPayout = inv.lastPayoutAt || inv.createdAt;
-        const nextRoiPayoutAt = new Date(new Date(lastPayout).getTime() + intervalMs);
+        let nextRoiPayoutAt;
+        if (process.env.ROI_TEST_MODE === 'true') {
+          const lastPayout = inv.lastPayoutAt || inv.createdAt;
+          nextRoiPayoutAt = new Date(new Date(lastPayout).getTime() + 60000);
+        } else {
+          // Production: next release is always the upcoming 12:00 AM midnight
+          nextRoiPayoutAt = new Date();
+          nextRoiPayoutAt.setHours(24, 0, 0, 0);
+        }
         return {
           ...inv,
           nextRoiPayoutAt
@@ -691,7 +698,7 @@ const claimDailyRoi = async (req, res) => {
       investment.pendingRoiClaim = 0;
       investment.claimExpiresAt = null;
       await investment.save();
-      return sendError(res, 'This daily ROI claim window has expired (6 hours missed ROI policy).', 400);
+      return sendError(res, 'This daily ROI claim window has expired (12 hours missed ROI policy).', 400);
     }
 
     const payoutAmount = investment.pendingRoiClaim;

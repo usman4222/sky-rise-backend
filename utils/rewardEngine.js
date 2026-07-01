@@ -403,7 +403,7 @@ async function runDailyRoiPayout() {
 
     const claimWindowMs = process.env.ROI_TEST_MODE === 'true'
       ? 60 * 1000 // 1 minute for testing
-      : 6 * 60 * 60 * 1000; // 6 hours for production
+      : 12 * 60 * 60 * 1000; // 12 hours for production
 
     const now = new Date();
 
@@ -432,11 +432,31 @@ async function runDailyRoiPayout() {
         });
       }
 
-      const lastPayoutAt = investment.lastPayoutAt || investment.createdAt;
-      const msSinceLastPayout = now.getTime() - new Date(lastPayoutAt).getTime();
-      const tolerance = process.env.ROI_TEST_MODE === 'true' ? 3000 : 30000;
-      if (msSinceLastPayout < ROI_INTERVAL_MS - tolerance) {
-        continue;
+      const lastPayout = investment.lastPayoutAt;
+      const createdAtDate = new Date(investment.createdAt);
+
+      if (process.env.ROI_TEST_MODE === 'true') {
+        // Sandbox mode: 1-minute cycle checks
+        const lastPayoutTime = lastPayout ? new Date(lastPayout).getTime() : createdAtDate.getTime();
+        const msSinceLastPayout = now.getTime() - lastPayoutTime;
+        const tolerance = 3000; // 3 seconds tolerance
+        if (msSinceLastPayout < 60000 - tolerance) {
+          continue;
+        }
+      } else {
+        // Production mode: Calendar-day 12:00 AM (midnight) schedule
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0); // 12:00 AM of current date
+
+        // 1. Must be purchased before the start of the current day
+        if (createdAtDate >= startOfToday) {
+          continue;
+        }
+
+        // 2. Must not have already received a payout today
+        if (lastPayout && new Date(lastPayout) >= startOfToday) {
+          continue;
+        }
       }
 
       // Calculate days passed since purchase
@@ -498,7 +518,7 @@ async function runDailyRoiPayout() {
         await Notification.create({
           user,
           title: 'Daily ROI Ready to Claim 💰',
-          message: `Your daily ROI payout of $${payoutAmount.toFixed(2)} for ${pkg.name} is ready. Please claim it within the next ${process.env.ROI_TEST_MODE === 'true' ? '1 minute' : '6 hours'}.`,
+          message: `Your daily ROI payout of $${payoutAmount.toFixed(2)} for ${pkg.name} is ready. Please claim it within the next ${process.env.ROI_TEST_MODE === 'true' ? '1 minute' : '12 hours'}.`,
           category: 'commission'
         });
       }
