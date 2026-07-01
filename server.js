@@ -375,6 +375,31 @@ if (process.env.ROI_TEST_MODE === 'true') {
       console.error('❌ Scheduled ROI payout failed:', error.message);
     }
   }, 60000);
+} else {
+  console.log('⏳ Production ROI scheduler active. Checking calendar midnight PKT rollover...');
+  setInterval(async () => {
+    try {
+      // Find the last completed daily ROI payout job
+      const lastJob = await BackgroundJob.findOne({
+        jobName: 'DAILY_ROI_PAYOUT',
+        status: 'completed'
+      }).sort({ createdAt: -1 });
+
+      const now = new Date();
+      // Adjust server date to Pakistan Standard Time (PKT / UTC+5) for midnight check
+      const nowPkt = new Date(now.getTime() + 5 * 60 * 60 * 1000);
+      nowPkt.setUTCHours(0, 0, 0, 0);
+      const startOfToday = new Date(nowPkt.getTime() - 5 * 60 * 60 * 1000);
+
+      // If no job was run today, trigger it!
+      if (!lastJob || new Date(lastJob.createdAt) < startOfToday) {
+        console.log('⏳ Midnight rolled over in PKT (or server woke up) and no daily ROI job executed today. Triggering runDailyRoiPayout...');
+        await runDailyRoiPayout();
+      }
+    } catch (error) {
+      console.error('❌ Automatic daily ROI payout failed:', error.message);
+    }
+  }, 60000); // Check every 60 seconds
 }
 
 // Weekly VIP Salary Payout Schedule
