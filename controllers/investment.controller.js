@@ -406,6 +406,9 @@ const purchasePackage = async (req, res) => {
       }
     }
 
+    // Check the activating user's own achievements (in case of previously accumulated team business)
+    await checkAchievementRewards(req.user._id);
+
     await Notification.create({
       user: req.user._id,
       title: 'Investment Active',

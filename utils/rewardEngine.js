@@ -26,6 +26,25 @@ import BackgroundJob from '../models/system/background_job.model.js';
 import LeadershipReward from '../models/rewards/leadership_reward.model.js';
 
 /**
+ * Helper to verify if a user has activated their account.
+ * To activate, the user must have at least one active self-investment of $10 or more.
+ * Excludes Admin Funded Packages.
+ */
+async function isUserActivated(userId) {
+  try {
+    const activeInvestments = await UserInvestment.find({
+      user: userId,
+      status: 'active',
+      packageType: { $ne: 'Admin Funded Package' }
+    });
+    return activeInvestments.some(inv => inv.amount >= 10);
+  } catch (error) {
+    console.error(`Error checking activation status for ${userId}:`, error.message);
+    return false;
+  }
+}
+
+/**
  * Helper to update/cache user business reports (5-level volume, total volume)
  */
 async function updateBusinessReport(userId) {
@@ -112,6 +131,20 @@ async function payoutDirectReferral(referredByUserId, referredUserId, realAmount
 
     const commissionAmount = realAmountPaid * (percent / 100);
     if (commissionAmount <= 0) return;
+
+    // Verify if sponsor is activated (has personal investment >= $10)
+    const activated = await isUserActivated(referredByUserId);
+    if (!activated) {
+      console.log(`❌ Sponsor ${referredByUserId} is not activated. Direct referral commission of $${commissionAmount} is forfeited.`);
+      // Send warning/missed notification to sponsor
+      await Notification.create({
+        user: referredByUserId,
+        title: 'Missed Direct Income ⚠️',
+        message: `You missed a Direct Referral Commission of $${commissionAmount.toFixed(2)} from a downline purchase because your account is not active. Please invest at least $10 to activate your account and receive future commissions.`,
+        category: 'system'
+      });
+      return;
+    }
 
     // Fetch Sponsor's wallet
     let wallet = await Wallet.findOne({ user: referredByUserId });
@@ -288,6 +321,13 @@ async function distributeLevelRoiCommissions(userId, payoutAmount, roiHistoryId)
 
       for (let levelIndex = 1; levelIndex <= uplineCount; levelIndex++) {
         const uplineId = treeNode.ancestors[levelIndex - 1];
+
+        // Verify if upline is activated (has personal investment >= $10)
+        const activated = await isUserActivated(uplineId);
+        if (!activated) {
+          console.log(`❌ Upline ${uplineId} is not activated. Skipping Level ${levelIndex} ROI commission.`);
+          continue;
+        }
 
         // Verify if upline unlocked this level
         const unlock = await LevelUnlock.findOne({ user: uplineId, level: levelIndex });
@@ -489,6 +529,14 @@ async function checkAchievementRewards(userId) {
   try {
     // 1. Cache user business volumes
     await updateBusinessReport(userId);
+
+    // Verify if user is activated (has personal investment >= $10)
+    const activated = await isUserActivated(userId);
+    if (!activated) {
+      console.log(`❌ User ${userId} is not activated. Skipping Achievement Rank checks.`);
+      return;
+    }
+
     const report = await BusinessReport.findOne({ user: userId });
     if (!report) return;
 
@@ -578,6 +626,14 @@ async function runWeeklyVipSalaryPayout() {
 
     for (const user of users) {
       const userId = user._id;
+
+      // Check if user is activated (has personal investment >= $10)
+      const activated = await isUserActivated(userId);
+      if (!activated) {
+        // Reset VIP rank to 0 if not activated, and skip salary check
+        await User.findByIdAndUpdate(userId, { vipRank: 0 });
+        continue;
+      }
 
       // 1. Get all immediate direct referrals representing distinct legs
       const directReferrals = await ReferralTree.find({ referredBy: userId });
@@ -907,6 +963,7 @@ async function payoutLeadershipRewards(userId, realAmountPaid, userInvestmentId)
 }
 
 export default {
+  isUserActivated,
   updateBusinessReport,
   payoutDirectReferral,
   payoutTeamBonusJoin,
