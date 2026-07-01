@@ -265,7 +265,7 @@ const submitWithdrawal = async (req, res) => {
     }
 
     // Determine withdrawal currency (default to USDT if crypto channel, otherwise PKR)
-    const isCryptoChannel = ['usdt_trc20', 'coinpayments'].includes(withdrawAcc.channel);
+    const isCryptoChannel = ['usdt_trc20', 'usdt_bep20', 'coinpayments'].includes(withdrawAcc.channel);
     const finalWithdrawalCurrency = withdrawalCurrency || (isCryptoChannel ? 'USDT' : 'PKR');
 
     if (!['PKR', 'USDT'].includes(finalWithdrawalCurrency)) {
@@ -358,7 +358,7 @@ const addWithdrawalAccount = async (req, res) => {
       );
     }
 
-    const allowedChannels = ['bank', 'raast', 'jazzcash', 'easypaisa', 'usdt_trc20', 'coinpayments'];
+    const allowedChannels = ['bank', 'raast', 'jazzcash', 'easypaisa', 'usdt_trc20', 'usdt_bep20', 'coinpayments'];
     if (!allowedChannels.includes(channel.toLowerCase().trim())) {
       return sendError(
         res,

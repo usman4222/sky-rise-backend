@@ -740,15 +740,21 @@ const withdrawUsdt = async (req, res) => {
       return sendError(res, 'Invalid or inactive withdrawal account', 400);
     }
 
-    const usdtChannels = ['usdt_trc20', 'coinpayments'];
+    const usdtChannels = ['usdt_trc20', 'usdt_bep20', 'coinpayments'];
     if (!usdtChannels.includes(withdrawAcc.channel)) {
-      return sendError(res, `USDT withdrawals require a crypto payout channel (usdt_trc20/coinpayments). Selected: ${withdrawAcc.channel}`, 400);
+      return sendError(res, `USDT withdrawals require a crypto payout channel (usdt_trc20/usdt_bep20/coinpayments). Selected: ${withdrawAcc.channel}`, 400);
     }
 
-    // Validate TRC20 address
+    // Validate wallet address format based on channel
     const walletAddress = withdrawAcc.walletAddress || withdrawAcc.accountNumber;
-    if (!walletAddress || !walletAddress.startsWith('T') || walletAddress.length !== 34) {
-      return sendError(res, 'Invalid TRC20 wallet address format. Must start with T and be 34 characters.', 400);
+    if (withdrawAcc.channel === 'usdt_bep20') {
+      if (!walletAddress || !walletAddress.startsWith('0x') || walletAddress.length !== 42) {
+        return sendError(res, 'Invalid BEP20 wallet address format. Must start with 0x and be 42 characters.', 400);
+      }
+    } else if (withdrawAcc.channel === 'usdt_trc20') {
+      if (!walletAddress || !walletAddress.startsWith('T') || walletAddress.length !== 34) {
+        return sendError(res, 'Invalid TRC20 wallet address format. Must start with T and be 34 characters.', 400);
+      }
     }
 
     // Check balance

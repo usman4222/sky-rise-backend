@@ -38,12 +38,12 @@ const withdrawalAccountSchema = new mongoose.Schema({
   name: {
     type: String,
     required: true,
-    trim: true // e.g. "My JazzCash", "Personal USDT TRC20", "HBL Savings"
+    trim: true // e.g. "My JazzCash", "Personal USDT BEP20", "HBL Savings"
   },
   // Withdrawal channel / method
   channel: {
     type: String,
-    enum: ['bank', 'raast', 'jazzcash', 'easypaisa', 'usdt_trc20', 'coinpayments'],
+    enum: ['bank', 'raast', 'jazzcash', 'easypaisa', 'usdt_trc20', 'usdt_bep20', 'coinpayments'],
     required: true
   },
   accountTitle: {
@@ -60,7 +60,7 @@ const withdrawalAccountSchema = new mongoose.Schema({
     get: decrypt,
     set: encrypt
   },
-  // Optional: USDT TRC20 or CoinPayments wallet address (stored encrypted)
+  // Optional: USDT BEP20 or CoinPayments wallet address (stored encrypted)
   walletAddress: {
     type: String,
     default: null,

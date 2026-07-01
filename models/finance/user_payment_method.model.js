@@ -9,7 +9,7 @@ const userPaymentMethodSchema = new mongoose.Schema({
   },
   methodType: {
     type: String,
-    enum: ['bank', 'raast', 'jazzcash', 'easypaisa', 'usdt_trc20'],
+    enum: ['bank', 'raast', 'jazzcash', 'easypaisa', 'usdt_trc20', 'usdt_bep20'],
     required: true
   },
   accountTitle: {
