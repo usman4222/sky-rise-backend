@@ -444,9 +444,10 @@ async function runDailyRoiPayout() {
           continue;
         }
       } else {
-        // Production mode: Calendar-day 12:00 AM (midnight) schedule
-        const startOfToday = new Date();
-        startOfToday.setHours(0, 0, 0, 0); // 12:00 AM of current date
+        // Production mode: Calendar-day 12:00 AM (midnight) schedule in PKT (UTC+5)
+        const nowPkt = new Date(now.getTime() + 5 * 60 * 60 * 1000);
+        nowPkt.setUTCHours(0, 0, 0, 0);
+        const startOfToday = new Date(nowPkt.getTime() - 5 * 60 * 60 * 1000);
 
         // 1. Must be purchased before the start of the current day
         if (createdAtDate >= startOfToday) {

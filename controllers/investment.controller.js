@@ -482,9 +482,10 @@ const getMyInvestments = async (req, res) => {
           const lastPayout = inv.lastPayoutAt || inv.createdAt;
           nextRoiPayoutAt = new Date(new Date(lastPayout).getTime() + 60000);
         } else {
-          // Production: next release is always the upcoming 12:00 AM midnight
-          nextRoiPayoutAt = new Date();
-          nextRoiPayoutAt.setHours(24, 0, 0, 0);
+          // Production: next release is always the upcoming 12:00 AM midnight in PKT (UTC+5)
+          const nowPkt = new Date(new Date().getTime() + 5 * 60 * 60 * 1000);
+          nowPkt.setUTCHours(24, 0, 0, 0); // Roll over to 12:00 AM of the next PKT calendar date
+          nextRoiPayoutAt = new Date(nowPkt.getTime() - 5 * 60 * 60 * 1000); // Convert back to UTC date
         }
         return {
           ...inv,
