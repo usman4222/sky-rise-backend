@@ -57,9 +57,9 @@ export const firebaseProtect = async (req, res, next) => {
 
         next();
     } catch (error) {
-        console.error('Firebase auth error:', error.message);
+        console.error('Firebase auth error:', error);
 
-        return sendError(res, 'Invalid or expired Firebase token', 401);
+        return sendError(res, `Invalid or expired Firebase token: ${error.message}`, 401);
     }
 };
 
