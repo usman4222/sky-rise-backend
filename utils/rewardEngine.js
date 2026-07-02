@@ -466,7 +466,7 @@ async function runDailyRoiPayout() {
 
       // Calculate current ROI growth: starting +0.1% every 10 days up to maxRoi
       const incrementSteps = Math.floor(daysPassed / pkg.roiIncrementDays);
-      let calculatedRoi = pkg.startRoi + (incrementSteps * pkg.roiIncrement);
+      let calculatedRoi = Number((pkg.startRoi + (incrementSteps * pkg.roiIncrement)).toFixed(4));
       if (calculatedRoi > pkg.maxRoi) {
         calculatedRoi = pkg.maxRoi;
       }

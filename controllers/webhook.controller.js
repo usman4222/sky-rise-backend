@@ -118,7 +118,11 @@ const handleCoinPaymentsIPN = async (req, res) => {
     );
 
     if (isCompleted) {
-      // Mark deposit as completed
+      // Determine the actual amount received
+      const actualReceivedAmount = payload.received_amount ? Number(payload.received_amount) : deposit.amountUSDT;
+
+      // Update deposit with actual received amount
+      deposit.amountUSDT = actualReceivedAmount;
       deposit.status = 'completed';
       deposit.gatewayTransactionId = cpTxnId;
       deposit.gatewayResponse = payload;
@@ -133,7 +137,7 @@ const handleCoinPaymentsIPN = async (req, res) => {
       }
 
       const prevBal = wallet.deposit || 0;
-      wallet.deposit = prevBal + deposit.amountUSDT;
+      wallet.deposit = prevBal + actualReceivedAmount;
       await wallet.save();
 
       console.log('[CoinPayments IPN] Wallet credited: true');
@@ -143,11 +147,11 @@ const handleCoinPaymentsIPN = async (req, res) => {
         user: deposit.user,
         walletType: 'deposit',
         type: 'credit',
-        amount: deposit.amountUSDT,
+        amount: actualReceivedAmount,
         previousBalance: prevBal,
         newBalance: wallet.deposit,
         category: 'deposit',
-        description: `CoinPayments Legacy auto-approved deposit. Amount: $${deposit.amountUSDT.toFixed(2)}. Gateway Tx: ${cpTxnId}`,
+        description: `CoinPayments Legacy auto-approved deposit. Amount: $${actualReceivedAmount.toFixed(2)}. Gateway Tx: ${cpTxnId}`,
         referenceModel: 'Deposit',
         referenceId: deposit._id
       });
@@ -157,7 +161,7 @@ const handleCoinPaymentsIPN = async (req, res) => {
         await Notification.create({
           user: deposit.user,
           title: 'CoinPayments Deposit Approved! 💰',
-          message: `Your deposit of $${deposit.amountUSDT.toFixed(2)} (${process.env.COINPAYMENTS_CURRENCY || 'LTCT'}) has been automatically verified and credited to your deposit wallet.`,
+          message: `Your deposit of $${actualReceivedAmount.toFixed(2)} (${process.env.COINPAYMENTS_CURRENCY || 'LTCT'}) has been automatically verified and credited to your deposit wallet.`,
           category: 'deposit'
         });
       }
