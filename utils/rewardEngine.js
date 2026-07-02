@@ -504,6 +504,27 @@ async function runDailyRoiPayout() {
         });
         await roiHistory.save();
 
+        // Get current wallet balance for history logging
+        let wallet = await Wallet.findOne({ user });
+        if (!wallet) {
+          wallet = new Wallet({ user });
+        }
+        const currentRoiBal = wallet.roi || 0;
+
+        // Log to WalletHistory so it displays in Transaction History list
+        await WalletHistory.create({
+          user,
+          walletType: 'roi',
+          type: 'credit',
+          amount: payoutAmount,
+          previousBalance: currentRoiBal,
+          newBalance: currentRoiBal,
+          category: 'daily_roi_income',
+          description: `Auto-reinvested daily ROI interest payout on investment principal. Compounded directly into ${pkg.name} principal.`,
+          referenceModel: 'RoiHistory',
+          referenceId: roiHistory._id
+        });
+
         // Distribute 10-level Team ROI commissions immediately
         await distributeLevelRoiCommissions(user, payoutAmount, roiHistory._id);
 
