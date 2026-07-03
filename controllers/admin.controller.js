@@ -697,7 +697,7 @@ const getAdminDashboard = async (req, res) => {
     const usersCount = await User.countDocuments({});
 
     const depositsApproved = await Deposit.aggregate([
-      { $match: { status: 'approved' } },
+      { $match: { status: { $in: ['approved', 'completed'] } } },
       { $group: { _id: null, total: { $sum: '$amountUSDT' } } }
     ]);
 
