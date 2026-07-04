@@ -32,10 +32,13 @@ import LeadershipReward from '../models/rewards/leadership_reward.model.js';
  */
 async function isUserActivated(userId) {
   try {
+    const user = await User.findById(userId);
+    if (user && user.isAdminFunded) {
+      return true;
+    }
     const activeInvestments = await UserInvestment.find({
       user: userId,
-      status: 'active',
-      packageType: { $ne: 'Admin Funded Package' }
+      status: 'active'
     });
     return activeInvestments.some(inv => inv.amount >= 10);
   } catch (error) {

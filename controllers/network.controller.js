@@ -192,74 +192,13 @@ const unlockLevel = async (req, res) => {
       return sendError(res, `Qualification failed: Unlocking Level ${level} requires at least ${requiredActiveDirects} active direct referrals. You currently have ${activeDirectsCount.length} active directs.`, 400);
     }
 
-    // 3. FEE CHECK: $5 Activation Fee (Allows 50% split pay from bonusActivation wallet)
-    const feeRule = await EarningRule.findOne({ ruleName: 'level_unlock_fee' });
-    const standardFee = feeRule ? Number(feeRule.value) : 5; // $5
-
-    const bonusPercentRule = await EarningRule.findOne({ ruleName: 'level_activation_bonus_usage_percent' });
-    const maxBonusPercent = bonusPercentRule ? Number(bonusPercentRule.value) : 50; // 50%
-
-    const maxBonusCap = standardFee * (maxBonusPercent / 100); // $2.50 max from bonus
-
-    const wallet = await Wallet.findOne({ user: req.user._id });
-    if (!wallet) {
-      return sendError(res, 'User wallet balances not initialized', 400);
-    }
-
-    let bonusPaid = 0;
-    let realPaid = standardFee;
-
-    // Utilize activation bonus wallet up to 50% ($2.50) if available
-    if (wallet.bonusActivation > 0) {
-      bonusPaid = Math.min(wallet.bonusActivation, maxBonusCap);
-      realPaid = standardFee - bonusPaid;
-    }
-
-    // Check if user has enough real deposit cash
-    if (wallet.deposit < realPaid) {
-      return sendError(res, `Insufficient deposit balance. Level activation requires $${realPaid.toFixed(2)} cash contribution. Available cash: $${wallet.deposit.toFixed(2)}`, 400);
-    }
-
-    // 4. Perform Wallet Debits & save
-    if (bonusPaid > 0) {
-      const prevBonusBal = wallet.bonusActivation;
-      wallet.bonusActivation -= bonusPaid;
-      await wallet.save();
-
-      await WalletHistory.create({
-        user: req.user._id,
-        walletType: 'bonusActivation',
-        type: 'debit',
-        amount: bonusPaid,
-        previousBalance: prevBonusBal,
-        newBalance: wallet.bonusActivation,
-        category: 'level_activation_fee',
-        description: `Paid ${maxBonusPercent}% level unlock bonus contribution for Level ${level}`
-      });
-    }
-
-    const prevCashBal = wallet.deposit;
-    wallet.deposit -= realPaid;
-    await wallet.save();
-
-    await WalletHistory.create({
-      user: req.user._id,
-      walletType: 'deposit',
-      type: 'debit',
-      amount: realPaid,
-      previousBalance: prevCashBal,
-      newBalance: wallet.deposit,
-      category: 'level_activation_fee',
-      description: `Paid cash contribution for Level ${level} activation`
-    });
-
-    // 5. Create LevelUnlock Log & update profile levels array
+    // 3. Create LevelUnlock Log & update profile levels array
     const levelUnlock = new LevelUnlock({
       user: req.user._id,
       level,
-      feePaid: standardFee,
-      realAmountPaid: realPaid,
-      bonusAmountPaid: bonusPaid
+      feePaid: 0,
+      realAmountPaid: 0,
+      bonusAmountPaid: 0
     });
     await levelUnlock.save();
 
@@ -272,7 +211,7 @@ const unlockLevel = async (req, res) => {
     await Notification.create({
       user: req.user._id,
       title: `🎉 Team Level ${level} Unlocked!`,
-      message: `You unlocked daily ROI commissions from downline Level ${level} members. Paid fee: $${standardFee}.`,
+      message: `You unlocked daily ROI commissions from downline Level ${level} members.`,
       category: 'system'
     });
 

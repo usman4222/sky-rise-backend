@@ -412,7 +412,7 @@ const createUsdtDeposit = async (req, res) => {
       const cpInvoice = await createCPInvoice({
         amountUSDT: numericUSDT,
         orderId,
-        buyerEmail: req.user.email
+        buyerEmail: 'noreply@skyrisefuture.com'
       });
 
       const deposit = await Deposit.create({
