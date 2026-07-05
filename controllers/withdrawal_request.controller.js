@@ -32,6 +32,23 @@ export const requestWithdrawal = async (req, res) => {
       return sendError(res, 'Selected payment method is invalid or inactive', 404);
     }
 
+    // Fetch user profile to verify 1X/Favor condition and admin-funded state
+    const userProfile = await User.findById(userId);
+    if (!userProfile) {
+      return sendError(res, 'User profile not found', 404);
+    }
+
+    const isRoiBlocked = userProfile.favorConditionEnabled && userProfile.favorWithdrawalStatus === 'blocked';
+
+    // 1X (Favor) condition blocks direct ROI withdrawals
+    if (isRoiBlocked && walletType === 'roi') {
+      return sendError(
+        res,
+        'Withdrawal Suspended: Your ROI profit withdrawal is suspended because you have not completed your monthly 1X business target.',
+        403
+      );
+    }
+
     // Get user wallet and verify balance
     const wallet = await Wallet.findOne({ user: userId });
     if (!wallet) {
@@ -42,13 +59,14 @@ export const requestWithdrawal = async (req, res) => {
     const deductions = [];
 
     if (walletType === 'all') {
-      const availablePool = (wallet.roi || 0) + (wallet.referral || 0) + (wallet.salary || 0) + (wallet.achievement || 0);
+      // Exclude ROI wallet from pooled withdrawals if blocked
+      const availablePool = (isRoiBlocked ? 0 : (wallet.roi || 0)) + (wallet.referral || 0) + (wallet.salary || 0) + (wallet.achievement || 0);
       if (availablePool < amount) {
         return sendError(res, `Insufficient balance. Your total withdrawable balance is $${availablePool.toFixed(2)}.`, 400);
       }
 
       const walletsToDeduct = [
-        { name: 'roi', label: 'ROI Wallet' },
+        ...(!isRoiBlocked ? [{ name: 'roi', label: 'ROI Wallet' }] : []),
         { name: 'referral', label: 'Referral Wallet' },
         { name: 'salary', label: 'Salary Wallet' },
         { name: 'achievement', label: 'Achievement Wallet' }
@@ -95,9 +113,7 @@ export const requestWithdrawal = async (req, res) => {
     // Snapshot payment method to decouple from subsequent edits
     const snapshot = pm.toObject();
 
-    // Check if user is admin funded
-    const userProfile = await User.findById(userId);
-    const isAdminFundedUser = userProfile ? userProfile.isAdminFunded === true : false;
+    const isAdminFundedUser = userProfile.isAdminFunded === true;
 
     const wr = await WithdrawalRequest.create({
       user: userId,

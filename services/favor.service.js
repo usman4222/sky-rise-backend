@@ -74,7 +74,7 @@ export const syncFavorConditionStatus = async (user) => {
     const duration = process.env.ROI_TEST_MODE === 'true' ? 3 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
     user.favorCycleEndDate = new Date(user.favorCycleStartDate.getTime() + duration);
     user.favorRequiredBusiness = user.favorAmount;
-    user.favorWithdrawalStatus = 'active';
+    user.favorWithdrawalStatus = 'blocked'; // Blocked by default until target is achieved
     user.favorSentWarnings = [];
     await user.save();
   }
@@ -88,29 +88,23 @@ export const syncFavorConditionStatus = async (user) => {
 
   // Check if requirement is met
   if (achievedBusiness >= user.favorRequiredBusiness) {
-    user.favorWithdrawalStatus = 'active';
-    user.favorManualOverride = false; // Reset override on natural qualification
-    user.favorLastQualificationDate = now;
-    
-    // Start next cycle automatically
-    user.favorCycleStartDate = now;
-    const duration = process.env.ROI_TEST_MODE === 'true' ? 3 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
-    user.favorCycleEndDate = new Date(now.getTime() + duration);
-    user.favorRequiredBusiness = user.favorAmount;
-    user.favorSentWarnings = [];
-    
-    await user.save();
+    if (user.favorWithdrawalStatus !== 'active') {
+      user.favorWithdrawalStatus = 'active';
+      user.favorManualOverride = false; // Reset override on natural qualification
+      user.favorLastQualificationDate = now;
+      await user.save();
 
-    // Send Completion Notification
-    await Notification.create({
-      user: user._id,
-      title: '🏆 Target Achieved',
-      message: 'Congratulations! You have successfully completed your monthly 1X business target. Your withdrawal remains active.',
-      category: 'system'
-    });
+      // Send Completion Notification
+      await Notification.create({
+        user: user._id,
+        title: '🏆 Target Achieved',
+        message: 'Congratulations! You have successfully completed your monthly 1X business target. Your ROI withdrawal is now active.',
+        category: 'system'
+      });
+    }
   } else {
-    // If not completed and cycle deadline has passed
-    if (now > user.favorCycleEndDate && !user.favorManualOverride) {
+    // If target is not met and no manual override is active, withdrawals are blocked
+    if (!user.favorManualOverride) {
       if (user.favorWithdrawalStatus !== 'blocked') {
         user.favorWithdrawalStatus = 'blocked';
         await user.save();
@@ -119,11 +113,42 @@ export const syncFavorConditionStatus = async (user) => {
         await Notification.create({
           user: user._id,
           title: '⚠️ Target Expired',
-          message: 'Your monthly 1X business requirement has not been completed. Your withdrawal has been temporarily suspended.',
+          message: 'Your monthly 1X business requirement has not been completed. Your ROI withdrawal has been temporarily suspended.',
           category: 'system'
         });
       }
     }
+  }
+
+  // Handle cycle expiration: Move to next cycle only when the current deadline passes
+  if (now > user.favorCycleEndDate) {
+    const duration = process.env.ROI_TEST_MODE === 'true' ? 3 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+    
+    // If they completed the target during the cycle, advance them to the next cycle
+    if (achievedBusiness >= user.favorRequiredBusiness) {
+      let newStartDate = user.favorCycleEndDate;
+      // If it is way past (e.g. system was inactive), align with now
+      if (now.getTime() - newStartDate.getTime() > duration) {
+        newStartDate = now;
+      }
+      
+      user.favorCycleStartDate = newStartDate;
+      user.favorCycleEndDate = new Date(newStartDate.getTime() + duration);
+      user.favorRequiredBusiness = user.favorAmount;
+      user.favorWithdrawalStatus = 'blocked'; // Blocked at the start of the new cycle
+      user.favorSentWarnings = [];
+      user.favorManualOverride = false;
+      await user.save();
+
+      // Send New Cycle Notification
+      await Notification.create({
+        user: user._id,
+        title: '📅 New Target Cycle Started',
+        message: `A new 30-day 1X business cycle has started. Target: $${user.favorRequiredBusiness}. Your ROI withdrawals are locked until target completion.`,
+        category: 'system'
+      });
+    }
+    // If they did not complete the target, they stay in the current cycle (blocked) until they complete it.
   }
 
   return user;

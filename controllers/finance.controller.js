@@ -188,10 +188,10 @@ const submitWithdrawal = async (req, res) => {
     }
 
     // Check Favor Account Monthly condition block
-    if (req.user.favorConditionEnabled && req.user.favorWithdrawalStatus === 'blocked') {
+    if (req.user.favorConditionEnabled && req.user.favorWithdrawalStatus === 'blocked' && sourceWallet === 'roi') {
       return sendError(
         res,
-        'Withdrawal Suspended: Monthly 1X business target not completed.',
+        'Withdrawal Suspended: Monthly 1X business target not completed. Your ROI profit withdrawal is suspended.',
         403
       );
     }

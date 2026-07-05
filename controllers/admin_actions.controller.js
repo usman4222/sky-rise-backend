@@ -691,7 +691,7 @@ export const updateUserFavorSettings = async (req, res) => {
         targetUser.favorCycleEndDate = new Date(targetUser.favorCycleStartDate.getTime() + duration);
         // Default target is favorAmount
         targetUser.favorRequiredBusiness = targetUser.favorAmount;
-        targetUser.favorWithdrawalStatus = 'active';
+        targetUser.favorWithdrawalStatus = 'blocked'; // Blocked by default until target is completed
         targetUser.favorManualOverride = false;
         targetUser.favorSentWarnings = [];
       } else if (!isEnabling && targetUser.favorConditionEnabled) {
@@ -707,7 +707,7 @@ export const updateUserFavorSettings = async (req, res) => {
       const duration = process.env.ROI_TEST_MODE === 'true' ? 3 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
       targetUser.favorCycleEndDate = new Date(targetUser.favorCycleStartDate.getTime() + duration);
       targetUser.favorRequiredBusiness = targetUser.favorAmount;
-      targetUser.favorWithdrawalStatus = 'active';
+      targetUser.favorWithdrawalStatus = 'blocked'; // Blocked by default until target is completed
       targetUser.favorManualOverride = false;
       targetUser.favorSentWarnings = [];
     }

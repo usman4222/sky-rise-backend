@@ -889,6 +889,10 @@ const listUsers = async (req, res) => {
       }
     }
 
+    if (req.query.favorActive === 'true') {
+      filter = { ...filter, favorConditionEnabled: true };
+    }
+
     const totalItems = await User.countDocuments(filter);
     const totalPages = Math.ceil(totalItems / limit);
 
@@ -925,16 +929,52 @@ const getUserDetail = async (req, res) => {
     const { syncFavorConditionStatus } = await import('../services/favor.service.js');
     userObj = await syncFavorConditionStatus(userObj);
 
-    const wallet = await Wallet.findOne({ user: id }) || {};
+    const wallet = await Wallet.findOne({ user: id });
     const businessReport = await BusinessReport.findOne({ user: id }) || {};
     const legs = await LegReport.find({ user: id }).populate('legUser', 'name email referralCode');
     const investments = await UserInvestment.find({ user: id }).populate('package', 'name');
     const deposits = await Deposit.find({ user: id }).sort({ createdAt: -1 }).limit(5);
     const withdrawals = await WithdrawalRequest.find({ user: id }).sort({ createdAt: -1 }).limit(5);
 
+    // Calculate actual hold and paid totals dynamically
+    const allWithdrawalRequests = await WithdrawalRequest.find({ user: id });
+    const newWithdrawalHold = allWithdrawalRequests
+      .filter(w => ['pending', 'approved'].includes(w.status))
+      .reduce((sum, w) => sum + w.amountRequested, 0);
+    const newWithdrawalPaid = allWithdrawalRequests
+      .filter(w => w.status === 'paid')
+      .reduce((sum, w) => sum + w.amountRequested, 0);
+
+    const legacyWithdrawals = await Withdrawal.find({ user: id });
+    const legacyWithdrawalHold = legacyWithdrawals
+      .filter(w => w.status === 'pending')
+      .reduce((sum, w) => sum + w.amountUSDT, 0);
+    const legacyWithdrawalPaid = legacyWithdrawals
+      .filter(w => w.status === 'approved')
+      .reduce((sum, w) => sum + w.payableAmountUSDT, 0);
+
+    const withdrawalHold = newWithdrawalHold + legacyWithdrawalHold;
+    const withdrawalPaid = newWithdrawalPaid + legacyWithdrawalPaid;
+
+    const walletData = wallet ? wallet.toObject() : {
+      deposit: 0,
+      freeRegBonus: 0,
+      roi: 0,
+      referral: 0,
+      bonusActivation: 0,
+      bonusTransferable: 0,
+      bonusReceived: 0,
+      salary: 0,
+      achievement: 0,
+      adminAllocated: 0,
+      withdrawal: 0
+    };
+    walletData.withdrawalHold = withdrawalHold;
+    walletData.withdrawalPaid = withdrawalPaid;
+
     return successResponse(res, 'User details retrieved successfully', {
       user: userObj,
-      wallet,
+      wallet: walletData,
       businessReport,
       legs,
       investments,
