@@ -19,7 +19,7 @@ const userSchema = new mongoose.Schema({
     index: true
   },
 
-  phone: { type: String, required: true, trim: true },
+  phone: { type: String, required: false, trim: true, default: '' },
 
   sponsor: {
     type: mongoose.Schema.Types.ObjectId,
@@ -37,8 +37,73 @@ const userSchema = new mongoose.Schema({
 
   status: {
     type: String,
-    enum: ['active', 'suspended'],
-    default: 'active'
+    enum: ['pending_verification', 'active', 'suspended', 'SUSPENDED_EMAIL_UNVERIFIED'],
+    default: 'pending_verification'
+  },
+
+  isBlocked: {
+    type: Boolean,
+    default: false
+  },
+
+  canLogin: {
+    type: Boolean,
+    default: true
+  },
+
+  canDeposit: {
+    type: Boolean,
+    default: true
+  },
+
+  canInvest: {
+    type: Boolean,
+    default: true
+  },
+
+  canWithdraw: {
+    type: Boolean,
+    default: true
+  },
+
+  canEarnReferral: {
+    type: Boolean,
+    default: true
+  },
+
+  emailVerified: {
+    type: Boolean,
+    default: false
+  },
+
+  signupIp: {
+    type: String,
+    default: null
+  },
+
+  signupUserAgent: {
+    type: String,
+    default: null
+  },
+
+  signupCountry: {
+    type: String,
+    default: null
+  },
+
+  deviceFingerprint: {
+    type: String,
+    default: null
+  },
+
+  isFlagged: {
+    type: Boolean,
+    default: false
+  },
+
+  flagReason: {
+    type: String,
+    default: null
   },
 
   kycStatus: {

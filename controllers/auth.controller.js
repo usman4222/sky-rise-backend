@@ -2,6 +2,8 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 
+import { trackFailedLogin, resetFailedLogin } from '../middleware/security.js';
+
 // Models
 import User from '../models/auth/user.model.js';
 import LoginAccount from '../models/auth/login_account.model.js';
@@ -34,6 +36,13 @@ const generateToken = (userId) => {
 // @access  Public
 const register = async (req, res) => {
   try {
+    if (process.env.REGISTRATION_LOCK === 'true') {
+      return res.status(403).json({
+        success: false,
+        message: 'New registrations are temporarily paused for security maintenance.'
+      });
+    }
+
     const { name, email, phone, password, sponsorCode } = req.body;
 
     if (!name || !email || !phone || !password) {
@@ -54,6 +63,10 @@ const register = async (req, res) => {
       sponsorUser = await User.findOne({ referralCode: sponsorCode.trim() });
       if (!sponsorUser) {
         return sendError(res, 'Invalid sponsor referral code', 400);
+      }
+
+      if (sponsorUser.canEarnReferral === false || sponsorUser.isBlocked || sponsorUser.status === 'suspended' || sponsorUser.status === 'SUSPENDED_EMAIL_UNVERIFIED') {
+        return sendError(res, "You cannot use a suspended user's referral code. Please try another.", 400);
       }
 
       // Fetch sponsor referral tree entry to map ancestors list
@@ -208,6 +221,7 @@ const register = async (req, res) => {
 const login = async (req, res) => {
   try {
     const { email, password } = req.body;
+    const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || req.ip || '127.0.0.1';
 
     if (!email || !password) {
       return sendError(res, 'Email and password are required', 400);
@@ -216,11 +230,12 @@ const login = async (req, res) => {
     // Find Auth Account
     const authAccount = await LoginAccount.findOne({ providerKey: email.trim().toLowerCase(), isActive: true });
     if (!authAccount) {
+      trackFailedLogin(ipAddress);
       // Log failed security entry
       await SecurityLog.create({
         event: 'LOGIN_FAILED',
         description: `Invalid credential login attempt on email: ${email}`,
-        ipAddress: req.ip || '127.0.0.1',
+        ipAddress: ipAddress,
         userAgent: req.headers['user-agent'] || 'unknown'
       });
       return sendError(res, 'Invalid credentials', 401);
@@ -229,11 +244,12 @@ const login = async (req, res) => {
     // Verify hashed password
     const isMatch = await bcrypt.compare(password, authAccount.passwordHash);
     if (!isMatch) {
+      trackFailedLogin(ipAddress);
       await SecurityLog.create({
         user: authAccount.user,
         event: 'LOGIN_FAILED',
         description: `Incorrect password entered for account email: ${email}`,
-        ipAddress: req.ip || '127.0.0.1',
+        ipAddress: ipAddress,
         userAgent: req.headers['user-agent'] || 'unknown'
       });
       return sendError(res, 'Invalid credentials', 401);
@@ -249,6 +265,9 @@ const login = async (req, res) => {
       return sendError(res, 'Your account is suspended. Contact Support.', 403);
     }
 
+    // Reset failed logins counter on success
+    resetFailedLogin(ipAddress);
+
     // Generate Session JWT
     const token = generateToken(user._id);
     const expiresAt = new Date();
@@ -257,7 +276,7 @@ const login = async (req, res) => {
     const session = new LoginSession({
       user: user._id,
       token,
-      ipAddress: req.ip || '127.0.0.1',
+      ipAddress: ipAddress,
       userAgent: req.headers['user-agent'] || 'unknown',
       expiresAt
     });
@@ -268,7 +287,7 @@ const login = async (req, res) => {
       user: user._id,
       event: 'LOGIN_SUCCESS',
       description: `User session successfully opened via email: ${email}`,
-      ipAddress: req.ip || '127.0.0.1',
+      ipAddress: ipAddress,
       userAgent: req.headers['user-agent'] || 'unknown'
     });
 

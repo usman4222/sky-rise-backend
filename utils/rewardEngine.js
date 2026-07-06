@@ -121,6 +121,13 @@ async function payoutDirectReferral(referredByUserId, referredUserId, realAmount
   try {
     if (!referredByUserId) return;
 
+    // Verify if sponsor has referral capabilities enabled
+    const sponsor = await User.findById(referredByUserId);
+    if (!sponsor || sponsor.canEarnReferral === false) {
+      console.log(`❌ Sponsor ${referredByUserId} does not exist or has referral benefits frozen.`);
+      return;
+    }
+
     // Check if the investment is an Admin Funded Package
     const investment = await UserInvestment.findById(userInvestmentId);
     if (investment && investment.packageType === 'Admin Funded Package') {
@@ -222,7 +229,7 @@ async function payoutTeamBonusJoin(joiningUserId) {
       const uplineId = treeNode.ancestors[depth - 1]; // Order: 0 is direct referredBy parent
       const uplineUser = await User.findById(uplineId);
 
-      if (!uplineUser || uplineUser.status === 'suspended') continue;
+      if (!uplineUser || uplineUser.status === 'suspended' || uplineUser.canEarnReferral === false) continue;
 
       // Check if joining is within 10 days of upline's registration deadline
       if (new Date() > uplineUser.teamBonusDeadline) {
@@ -324,6 +331,12 @@ async function distributeLevelRoiCommissions(userId, payoutAmount, roiHistoryId)
 
       for (let levelIndex = 1; levelIndex <= uplineCount; levelIndex++) {
         const uplineId = treeNode.ancestors[levelIndex - 1];
+        const upline = await User.findById(uplineId);
+
+        if (!upline || upline.canEarnReferral === false) {
+          console.log(`❌ Upline ${uplineId} has referral benefits frozen or does not exist. Skipping Level ${levelIndex} ROI commission.`);
+          continue;
+        }
 
         // Verify if upline is activated (has personal investment >= $10)
         const activated = await isUserActivated(uplineId);

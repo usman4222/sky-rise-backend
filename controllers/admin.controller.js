@@ -1012,6 +1012,82 @@ const activateUser = async (req, res) => {
   }
 };
 
+const listUnverifiedUsers = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const filter = {
+      $or: [
+        { emailVerified: false },
+        { status: 'pending_verification' }
+      ]
+    };
+
+    const totalItems = await User.countDocuments(filter);
+    const totalPages = Math.ceil(totalItems / limit);
+
+    const users = await User.find(filter)
+      .populate('sponsor', 'name email referralCode')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    return successResponse(res, 'Unverified users retrieved successfully', {
+      users,
+      pagination: {
+        totalItems,
+        totalPages,
+        currentPage: page,
+        limit
+      }
+    });
+  } catch (error) {
+    console.error('listUnverifiedUsers error:', error);
+    return sendError(res, 'Failed to retrieve unverified users', 500, error);
+  }
+};
+
+const cleanupUnverifiedUsers = async (req, res) => {
+  try {
+    const hours = parseInt(req.body.hours) || 48; // default to 48 hours
+    const thresholdDate = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+    const filter = {
+      $or: [
+        { emailVerified: false },
+        { status: 'pending_verification' }
+      ],
+      createdAt: { $lt: thresholdDate }
+    };
+
+    // Find matching users first to log what was deleted
+    const usersToDelete = await User.find(filter).select('_id name email').lean();
+    const userIds = usersToDelete.map(u => u._id);
+
+    if (userIds.length > 0) {
+      await User.deleteMany({ _id: { $in: userIds } });
+      
+      await AdminLog.create({
+        admin: req.user._id,
+        action: 'CLEANUP_UNVERIFIED_USERS',
+        targetModel: 'User',
+        newData: { deletedCount: userIds.length, hoursThreshold: hours, deletedUsers: usersToDelete },
+        ipAddress: req.ip || '127.0.0.1'
+      });
+    }
+
+    return successResponse(res, `Cleaned up ${userIds.length} unverified users successfully.`, {
+      deletedCount: userIds.length,
+      deletedUsers: usersToDelete
+    });
+  } catch (error) {
+    console.error('cleanupUnverifiedUsers error:', error);
+    return sendError(res, 'Failed to cleanup unverified users', 500, error);
+  }
+};
+
 export default {
   processDeposit,
   processWithdrawal,
@@ -1033,5 +1109,8 @@ export default {
   listUsers,
   getUserDetail,
   suspendUser,
-  activateUser
+  activateUser,
+
+  listUnverifiedUsers,
+  cleanupUnverifiedUsers
 };

@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 
 import admin from '../config/firebase.js';
 import User from '../models/auth/user.model.js';
+import { isDisposableEmail } from '../utils/emailFilter.js';
 import Wallet from '../models/finance/wallet.model.js';
 import WalletHistory from '../models/finance/wallet_history.model.js';
 import ReferralTree from '../models/network/referral_tree.model.js';
@@ -351,6 +352,93 @@ export const verifyOtp = async (req, res) => {
     }
 };
 
+export const completeUserOnboarding = async (user, req) => {
+    // 1. Ensure user role
+    await ensureUserRole(user._id);
+
+    // 2. Setup referral tree node if it doesn't exist
+    let referralNode = await ReferralTree.findOne({ user: user._id });
+    if (!referralNode) {
+        let uplineAncestors = [];
+        let sponsorUser = null;
+        if (user.sponsor) {
+            sponsorUser = await User.findById(user.sponsor);
+            if (sponsorUser) {
+                const sponsorNode = await ReferralTree.findOne({ user: sponsorUser._id });
+                if (sponsorNode) {
+                    uplineAncestors = [sponsorUser._id, ...sponsorNode.ancestors];
+                } else {
+                    uplineAncestors = [sponsorUser._id];
+                }
+            }
+        }
+
+        referralNode = await ReferralTree.create({
+            user: user._id,
+            referredBy: user.sponsor || null,
+            ancestors: uplineAncestors
+        });
+
+        if (sponsorUser) {
+            await ReferralTree.findOneAndUpdate(
+                { user: sponsorUser._id },
+                { $inc: { directReferralsCount: 1 } }
+            );
+
+            await ReferralTree.updateMany(
+                { user: { $in: uplineAncestors } },
+                { $inc: { teamSize: 1 } }
+            );
+            
+            // Trigger $1 Team Joins bonus calculations
+            await payoutTeamBonusJoin(user._id);
+        }
+    }
+
+    // 3. Create wallets and credit freeRegBonus if they don't exist
+    let wallet = await Wallet.findOne({ user: user._id });
+    if (!wallet) {
+        wallet = await Wallet.create({
+            user: user._id,
+            deposit: 0,
+            freeRegBonus: 5,
+            roi: 0,
+            referral: 0,
+            bonusActivation: 0,
+            bonusTransferable: 0,
+            bonusReceived: 0,
+            salary: 0,
+            achievement: 0,
+            withdrawal: 0
+        });
+
+        await WalletHistory.create({
+            user: user._id,
+            walletType: 'freeRegBonus',
+            type: 'credit',
+            amount: 5,
+            previousBalance: 0,
+            newBalance: 5,
+            category: 'free_reg_bonus',
+            description: 'Welcome promotional signup credit. Valid for first investment merge only.'
+        });
+    }
+
+    // 4. Update status in MongoDB
+    user.emailVerified = true;
+    user.status = 'active';
+    await user.save();
+
+    // 5. Log Security event
+    await SecurityLog.create({
+        user: user._id,
+        event: 'FIREBASE_USER_SYNCED',
+        description: `Firebase account onboarding completed & synced for email: ${user.email}`,
+        ipAddress: req.headers['x-forwarded-for'] || req.socket.remoteAddress || req.ip || '127.0.0.1',
+        userAgent: req.headers['user-agent'] || 'unknown'
+    });
+};
+
 export const syncFirebaseUser = async (req, res) => {
     try {
         const { idToken, name, phone, sponsorCode, phoneVerificationToken } = req.body;
@@ -379,7 +467,6 @@ export const syncFirebaseUser = async (req, res) => {
         }
         */
 
-
         if (!idToken) {
             return sendError(res, 'Firebase ID token is required', 400);
         }
@@ -388,19 +475,41 @@ export const syncFirebaseUser = async (req, res) => {
 
         const firebaseUid = decodedToken.uid;
         const email = decodedToken.email;
+        const isEmailVerified = decodedToken.email_verified || false;
 
         if (!email) {
             return sendError(res, 'Firebase account email is required', 400);
         }
 
+        const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || req.ip || '127.0.0.1';
+        const userAgent = req.headers['user-agent'] || 'unknown';
+
         let existingUser = await User.findOne({ firebaseUid });
 
         if (existingUser) {
-            await ensureUserRole(existingUser._id);
+            if (existingUser.status === 'suspended') {
+                return sendError(res, 'Your account is suspended. Contact Support.', 403);
+            }
 
-            const userPayload = await buildFirebaseUserResponse(existingUser, decodedToken.email_verified || false);
+            if (!isEmailVerified) {
+                // If they are not verified in Firebase, return pending status
+                return res.status(200).json({
+                    success: true,
+                    status: 'PENDING_EMAIL_VERIFICATION',
+                    message: 'Email verification is required to complete registration.'
+                });
+            }
 
-            return successResponse(res, 'Firebase user already synced', {
+            // Complete onboarding if they were unverified/pending previously
+            if (!existingUser.emailVerified || existingUser.status === 'pending_verification') {
+                await completeUserOnboarding(existingUser, req);
+            } else {
+                await ensureUserRole(existingUser._id);
+            }
+
+            const userPayload = await buildFirebaseUserResponse(existingUser, true);
+
+            return successResponse(res, 'Firebase user synced successfully', {
                 user: userPayload
             });
         }
@@ -408,35 +517,92 @@ export const syncFirebaseUser = async (req, res) => {
         const emailExists = await User.findOne({ email });
 
         if (emailExists) {
+            if (emailExists.status === 'suspended') {
+                return sendError(res, 'Associated profile is suspended. Contact Support.', 403);
+            }
+
+            if (!isEmailVerified) {
+                return res.status(200).json({
+                    success: true,
+                    status: 'PENDING_EMAIL_VERIFICATION',
+                    message: 'Email verification is required to complete registration.'
+                });
+            }
+
             emailExists.firebaseUid = firebaseUid;
             await emailExists.save();
 
-            await ensureUserRole(emailExists._id);
+            await completeUserOnboarding(emailExists, req);
 
-            const userPayload = await buildFirebaseUserResponse(emailExists, decodedToken.email_verified || false);
+            const userPayload = await buildFirebaseUserResponse(emailExists, true);
 
-            return successResponse(res, 'Firebase account linked with existing MongoDB user', {
+            return successResponse(res, 'Firebase account linked and synced successfully', {
                 user: userPayload
             });
         }
 
-        let sponsorUser = null;
-        let uplineAncestors = [];
+        // New Registration
 
+        if (process.env.REGISTRATION_LOCK === 'true') {
+            return res.status(403).json({
+                success: false,
+                message: 'New registrations are temporarily paused for security maintenance.'
+            });
+        }
+
+        // 1. Block disposable emails
+        if (isDisposableEmail(email)) {
+            return sendError(res, 'Registration using disposable email addresses is not allowed.', 400);
+        }
+
+        // Validate sponsor code first (even for unverified users) so we block suspended sponsors immediately
+        let sponsorUser = null;
         if (sponsorCode) {
             sponsorUser = await User.findOne({ referralCode: sponsorCode.trim() });
-
             if (!sponsorUser) {
                 return sendError(res, 'Invalid sponsor referral code', 400);
             }
-
-            const sponsorNode = await ReferralTree.findOne({ user: sponsorUser._id });
-
-            if (sponsorNode) {
-                uplineAncestors = [sponsorUser._id, ...sponsorNode.ancestors];
-            } else {
-                uplineAncestors = [sponsorUser._id];
+            if (sponsorUser.canEarnReferral === false || sponsorUser.isBlocked || sponsorUser.status === 'suspended' || sponsorUser.status === 'SUSPENDED_EMAIL_UNVERIFIED') {
+                return sendError(res, "You cannot use a suspended user's referral code. Please try another.", 400);
             }
+        }
+
+        // Defer MongoDB registration until the Firebase email has been verified
+        if (!isEmailVerified) {
+            const PendingRegistration = (await import('../models/auth/pending_registration.model.js')).default;
+            await PendingRegistration.findOneAndUpdate(
+                { firebaseUid },
+                {
+                    name: name || decodedToken.name || email.split('@')[0],
+                    email,
+                    phone: phone || '',
+                    sponsorCode: sponsorCode || ''
+                },
+                { upsert: true, new: true }
+            );
+
+            await SecurityLog.create({
+                event: 'USER_REGISTERED_UNVERIFIED_ATTEMPT',
+                description: `Deferred MongoDB user creation for unverified Firebase email: ${email}`,
+                ipAddress,
+                userAgent
+            });
+
+            return res.status(200).json({
+                success: true,
+                status: 'PENDING_EMAIL_VERIFICATION',
+                message: 'Email verification is required to complete registration.'
+            });
+        }
+
+        // 2. Check IP registration velocity (flag if >= 3 accounts created from the same IP)
+        const sameIpCount = await User.countDocuments({ signupIp: ipAddress });
+        let isFlagged = false;
+        let flagReason = null;
+        if (sameIpCount >= 3) {
+            isFlagged = true;
+            flagReason = `Multiple accounts (${sameIpCount + 1}) registered from the same IP address: ${ipAddress}`;
+            console.log(`[Suspicious Activity Flagged] IP: ${ipAddress} | Email: ${email}`);
         }
 
         const referralCode = await generateReferralCode();
@@ -444,7 +610,7 @@ export const syncFirebaseUser = async (req, res) => {
         const deadline = new Date();
         deadline.setDate(deadline.getDate() + 10);
 
-        const user = await User.create({
+        const newUser = await User.create({
             firebaseUid,
             name: name || decodedToken.name || email.split('@')[0],
             email,
@@ -452,68 +618,30 @@ export const syncFirebaseUser = async (req, res) => {
             sponsor: sponsorUser ? sponsorUser._id : null,
             referralCode,
             status: 'active',
-            kycStatus: 'unsubmitted',
+            emailVerified: true,
+            signupIp: ipAddress,
+            signupUserAgent: userAgent,
+            isFlagged,
+            flagReason,
             teamBonusDeadline: deadline
         });
 
-        await ensureUserRole(user._id);
+        await ensureUserRole(newUser._id);
 
-        await ReferralTree.create({
-            user: user._id,
-            referredBy: sponsorUser ? sponsorUser._id : null,
-            ancestors: uplineAncestors
-        });
+        // Complete active onboarding immediately since the Firebase email is verified
+        await completeUserOnboarding(newUser, req);
 
-        if (sponsorUser) {
-            await ReferralTree.findOneAndUpdate(
-                { user: sponsorUser._id },
-                { $inc: { directReferralsCount: 1 } }
-            );
-
-            await ReferralTree.updateMany(
-                { user: { $in: uplineAncestors } },
-                { $inc: { teamSize: 1 } }
-            );
+        if (isFlagged) {
+            await SecurityLog.create({
+                user: newUser._id,
+                event: 'SUSPICIOUS_SIGNUP_FLAGGED',
+                description: flagReason,
+                ipAddress,
+                userAgent
+            });
         }
 
-        await Wallet.create({
-            user: user._id,
-            deposit: 0,
-            freeRegBonus: 5,
-            roi: 0,
-            referral: 0,
-            bonusActivation: 0,
-            bonusTransferable: 0,
-            bonusReceived: 0,
-            salary: 0,
-            achievement: 0,
-            withdrawal: 0
-        });
-
-        await WalletHistory.create({
-            user: user._id,
-            walletType: 'freeRegBonus',
-            type: 'credit',
-            amount: 5,
-            previousBalance: 0,
-            newBalance: 5,
-            category: 'free_reg_bonus',
-            description: 'Welcome promotional signup credit. Valid for first investment merge only.'
-        });
-
-        if (sponsorUser) {
-            await payoutTeamBonusJoin(user._id);
-        }
-
-        await SecurityLog.create({
-            user: user._id,
-            event: 'FIREBASE_USER_SYNCED',
-            description: `Firebase account synced for email: ${email}`,
-            ipAddress: req.ip || '127.0.0.1',
-            userAgent: req.headers['user-agent'] || 'unknown'
-        });
-
-        const userPayload = await buildFirebaseUserResponse(user, decodedToken.email_verified || false);
+        const userPayload = await buildFirebaseUserResponse(newUser, true);
 
         return successResponse(
             res,

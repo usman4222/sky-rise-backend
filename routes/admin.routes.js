@@ -79,6 +79,8 @@ router.patch('/withdrawals/:id/mark-paid', adminMiddleware, markPaidWithdrawalRe
 // User Management
 // ===============================
 router.get('/users', adminMiddleware, adminController.listUsers);
+router.get('/unverified-users', adminMiddleware, adminController.listUnverifiedUsers);
+router.post('/unverified-users/cleanup', adminMiddleware, adminController.cleanupUnverifiedUsers);
 router.get('/users/:id', adminMiddleware, adminController.getUserDetail);
 router.post('/users/:id/suspend', adminMiddleware, adminController.suspendUser);
 router.post('/users/:id/activate', adminMiddleware, adminController.activateUser);

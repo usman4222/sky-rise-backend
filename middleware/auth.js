@@ -34,6 +34,10 @@ const protect = async (req, res, next) => {
         return sendError(res, 'User account not found', 401);
       }
 
+      if (user.isBlocked || user.status === 'SUSPENDED_EMAIL_UNVERIFIED') {
+        return sendError(res, 'Your account is blocked. Contact Support.', 403);
+      }
+
       if (user.status === 'suspended') {
         return sendError(res, 'Your account is suspended', 403);
       }

@@ -198,3 +198,121 @@ export const adminRateLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false
 });
+
+// 6. Registration rate limiter: Max 5 per IP per hour
+export const registrationRateLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 5,
+    handler: async (req, res, next, options) => {
+        await logSecurityEvent({
+            event: 'REGISTRATION_RATE_LIMIT_TRIGGERED',
+            description: `IP address triggered registration rate limits. Email: ${req.body.email || 'unknown'}`,
+            req
+        });
+        res.status(options.statusCode).send(options.message);
+    },
+    message: {
+        success: false,
+        message: 'Too many accounts registered from this IP. Please try again after an hour.'
+    },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
+// 7. Verification email resend rate limiter: Max 3 per hour
+export const resendVerificationRateLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 3,
+    handler: async (req, res, next, options) => {
+        await logSecurityEvent({
+            event: 'VERIFICATION_RESEND_RATE_LIMIT_TRIGGERED',
+            description: `IP address triggered verification email resend limits.`,
+            req
+        });
+        res.status(options.statusCode).send(options.message);
+    },
+    message: {
+        success: false,
+        message: 'Too many verification email requests. Please try again after an hour.'
+    },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
+// 8. Password reset rate limiter: Max 3 per hour
+export const passwordResetRateLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 3,
+    handler: async (req, res, next, options) => {
+        await logSecurityEvent({
+            event: 'PASSWORD_RESET_RATE_LIMIT_TRIGGERED',
+            description: `IP address triggered password reset rate limits.`,
+            req
+        });
+        res.status(options.statusCode).send(options.message);
+    },
+    message: {
+        success: false,
+        message: 'Too many password reset attempts. Please try again after an hour.'
+    },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
+// 9. Firebase sync rate limiter: Max 15 per 15 minutes per IP
+export const firebaseSyncRateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 15,
+    handler: async (req, res, next, options) => {
+        await logSecurityEvent({
+            event: 'FIREBASE_SYNC_RATE_LIMIT_TRIGGERED',
+            description: `IP address triggered Firebase sync rate limits.`,
+            req
+        });
+        res.status(options.statusCode).send(options.message);
+    },
+    message: {
+        success: false,
+        message: 'Too many sync attempts. Please try again after 15 minutes.'
+    },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
+// 10. Memory-based IP Lockout for Failed Logins: Max 5 failed logins within 15 minutes per IP
+const failedLoginAttempts = new Map();
+
+export const trackFailedLogin = (ip) => {
+    const now = Date.now();
+    const attempts = failedLoginAttempts.get(ip);
+    if (!attempts || attempts.expiresAt < now) {
+        failedLoginAttempts.set(ip, { count: 1, expiresAt: now + 15 * 60 * 1000 });
+    } else {
+        attempts.count += 1;
+        failedLoginAttempts.set(ip, attempts);
+    }
+};
+
+export const resetFailedLogin = (ip) => {
+    failedLoginAttempts.delete(ip);
+};
+
+export const checkFailedLoginLimit = async (req, res, next) => {
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+    const now = Date.now();
+    const attempts = failedLoginAttempts.get(ip);
+    
+    if (attempts && attempts.expiresAt > now && attempts.count >= 5) {
+        await SecurityLog.create({
+            event: 'LOGIN_LOCKOUT_TRIGGERED',
+            description: `IP locked out due to 5+ failed login attempts. Attempt count: ${attempts.count}`,
+            ipAddress: ip,
+            userAgent: req.headers['user-agent'] || 'unknown'
+        });
+        return res.status(429).json({
+            success: false,
+            message: 'Too many failed login attempts. Access is locked for 15 minutes.'
+        });
+    }
+    next();
+};
