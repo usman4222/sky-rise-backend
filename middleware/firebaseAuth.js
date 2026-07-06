@@ -212,6 +212,13 @@ export const firebaseProtect = async (req, res, next) => {
         req.firebaseUser = decodedToken;
         req.user = user;
 
+        // Self-heal: If user is verified in Firebase but not marked as verified in MongoDB, update it!
+        if (decodedToken.email_verified === true && !user.emailVerified) {
+            user.emailVerified = true;
+            await user.save();
+            console.log(`[Self-Healing] Marked email as verified in MongoDB for ${user.email}`);
+        }
+
         // If email is not verified, and this is NOT the "/me" profile route, block access for non-admins
         const isProfileRoute = req.originalUrl === '/api/firebase-auth/me' || req.path === '/me';
         if ((!decodedToken.email_verified || !user.emailVerified || user.status === 'pending_verification') && !isProfileRoute) {
