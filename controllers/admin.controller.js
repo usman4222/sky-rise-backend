@@ -712,10 +712,16 @@ const getAdminDashboard = async (req, res) => {
 
     // New withdrawal requests stats
     const paidWithdrawalsAgg = await WithdrawalRequest.aggregate([
-      { $match: { status: 'paid' } },
+      { $match: { status: { $in: ['approved', 'paid'] } } },
       { $group: { _id: null, total: { $sum: '$amountRequested' } } }
     ]);
     const totalPaidWithdrawals = paidWithdrawalsAgg[0] ? paidWithdrawalsAgg[0].total : 0;
+
+    const strictlyPaidAgg = await WithdrawalRequest.aggregate([
+      { $match: { status: 'paid' } },
+      { $group: { _id: null, total: { $sum: '$amountRequested' } } }
+    ]);
+    const totalStrictlyPaid = strictlyPaidAgg[0] ? strictlyPaidAgg[0].total : 0;
 
     const pendingWithdrawalsAgg = await WithdrawalRequest.aggregate([
       { $match: { status: 'pending' } },
@@ -761,7 +767,7 @@ const getAdminDashboard = async (req, res) => {
         usersCount,
         totalDeposited,
         totalWithdrawn: legacyWithdrawn + totalPaidWithdrawals,
-        totalPaidWithdrawalAmount: totalPaidWithdrawals,
+        totalPaidWithdrawalAmount: legacyWithdrawn + totalStrictlyPaid,
         totalPendingWithdrawalAmount,
         totalApprovedSalaryAmount,
         totalAdminDeposit,
@@ -939,10 +945,10 @@ const getUserDetail = async (req, res) => {
     // Calculate actual hold and paid totals dynamically
     const allWithdrawalRequests = await WithdrawalRequest.find({ user: id });
     const newWithdrawalHold = allWithdrawalRequests
-      .filter(w => ['pending', 'approved'].includes(w.status))
+      .filter(w => ['pending'].includes(w.status))
       .reduce((sum, w) => sum + w.amountRequested, 0);
     const newWithdrawalPaid = allWithdrawalRequests
-      .filter(w => w.status === 'paid')
+      .filter(w => ['approved', 'paid'].includes(w.status))
       .reduce((sum, w) => sum + w.amountRequested, 0);
 
     const legacyWithdrawals = await Withdrawal.find({ user: id });
