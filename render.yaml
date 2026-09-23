@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: sky-rise-backend
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FRONTEND_URL
+        value: "https://your-frontend-url.com" # Yahan apne frontend ki exact URL dalen
+      - key: MONGO_URI
+        value: "mongodb+srv://..." # Yahan apna exact MongoDB URI paste karein
+      - key: JWT_SECRET
+        value: "your_jwt_secret_key" # Yahan apna JWT secret paste karein
+      - key: PORT
+        value: 5000
