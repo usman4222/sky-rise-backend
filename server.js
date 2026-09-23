@@ -362,75 +362,90 @@ app.use((error, req, res, next) => {
   });
 });
 
-// Automatic ROI Distribution in Test Mode
+// Automatic ROI Distribution and Scheduled Jobs
 const { runDailyRoiPayout, runWeeklyVipSalaryPayout } = rewardEngine;
+import { checkFavorWarningsAndExpiring } from './services/favor.service.js';
 
-if (process.env.ROI_TEST_MODE === 'true') {
-  console.log('⏳ ROI Test Mode is active. Auto ROI payouts scheduled every 1 minute.');
-  setInterval(async () => {
-    try {
-      console.log('⏳ Scheduled ROI check: Triggering runDailyRoiPayout...');
-      await runDailyRoiPayout();
-    } catch (error) {
-      console.error('❌ Scheduled ROI payout failed:', error.message);
-    }
-  }, 60000);
-} else {
-  console.log('⏳ Production ROI scheduler active. Checking calendar midnight PKT rollover...');
-  setInterval(async () => {
-    try {
-      // Find the last completed daily ROI payout job
-      const lastJob = await BackgroundJob.findOne({
-        jobName: 'DAILY_ROI_PAYOUT',
-        status: 'completed'
-      }).sort({ createdAt: -1 });
-
-      const now = new Date();
-      // Adjust server date to Pakistan Standard Time (PKT / UTC+5) for midnight check
-      const nowPkt = new Date(now.getTime() + 5 * 60 * 60 * 1000);
-      nowPkt.setUTCHours(0, 0, 0, 0);
-      const startOfToday = new Date(nowPkt.getTime() - 5 * 60 * 60 * 1000);
-
-      // If no job was run today, trigger it!
-      if (!lastJob || new Date(lastJob.createdAt) < startOfToday) {
-        console.log('⏳ Midnight rolled over in PKT (or server woke up) and no daily ROI job executed today. Triggering runDailyRoiPayout...');
+if (!process.env.VERCEL) {
+  // --- RUN BACKGROUND JOBS AND SERVER ONLY IF NOT ON VERCEL (e.g. Local or Render) ---
+  if (process.env.ROI_TEST_MODE === 'true') {
+    console.log('⏳ ROI Test Mode is active. Auto ROI payouts scheduled every 1 minute.');
+    setInterval(async () => {
+      try {
+        console.log('⏳ Scheduled ROI check: Triggering runDailyRoiPayout...');
         await runDailyRoiPayout();
+      } catch (error) {
+        console.error('❌ Scheduled ROI payout failed:', error.message);
       }
+    }, 60000);
+  } else {
+    console.log('⏳ Production ROI scheduler active. Checking calendar midnight PKT rollover...');
+    setInterval(async () => {
+      try {
+        const lastJob = await BackgroundJob.findOne({
+          jobName: 'DAILY_ROI_PAYOUT',
+          status: 'completed'
+        }).sort({ createdAt: -1 });
+
+        const now = new Date();
+        const nowPkt = new Date(now.getTime() + 5 * 60 * 60 * 1000);
+        nowPkt.setUTCHours(0, 0, 0, 0);
+        const startOfToday = new Date(nowPkt.getTime() - 5 * 60 * 60 * 1000);
+
+        if (!lastJob || new Date(lastJob.createdAt) < startOfToday) {
+          console.log('⏳ Midnight rolled over in PKT (or server woke up). Triggering runDailyRoiPayout...');
+          await runDailyRoiPayout();
+        }
+      } catch (error) {
+        console.error('❌ Automatic daily ROI payout failed:', error.message);
+      }
+    }, 60000);
+  }
+
+  // Weekly VIP Salary Payout Schedule
+  const vipIntervalMs = process.env.ROI_TEST_MODE === 'true' ? 7 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
+  console.log(`⏳ Weekly VIP Salary scheduler loaded. Runs every ${process.env.ROI_TEST_MODE === 'true' ? '7 minutes' : '7 days'}.`);
+  setInterval(async () => {
+    try {
+      console.log('⏳ Scheduled VIP Salary check: Triggering runWeeklyVipSalaryPayout...');
+      await runWeeklyVipSalaryPayout();
     } catch (error) {
-      console.error('❌ Automatic daily ROI payout failed:', error.message);
+      console.error('❌ Scheduled VIP salary payout failed:', error.message);
     }
-  }, 60000); // Check every 60 seconds
+  }, vipIntervalMs);
+
+  // Scheduled Favor Account condition check
+  const checkFavorIntervalMs = process.env.ROI_TEST_MODE === 'true' ? 15000 : 24 * 60 * 60 * 1000;
+  console.log(`⏳ Favor Account condition checker loaded. Runs every ${process.env.ROI_TEST_MODE === 'true' ? '15 seconds' : '24 hours'}.`);
+  setInterval(async () => {
+    try {
+      await checkFavorWarningsAndExpiring();
+    } catch (error) {
+      console.error('❌ Scheduled Favor Account check failed:', error.message);
+    }
+  }, checkFavorIntervalMs);
+
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => {
+    console.log(`🚀 SkyRise Future Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
+  });
 }
 
-// Weekly VIP Salary Payout Schedule
-const vipIntervalMs = process.env.ROI_TEST_MODE === 'true' ? 7 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
-console.log(`⏳ Weekly VIP Salary scheduler loaded. Runs every ${process.env.ROI_TEST_MODE === 'true' ? '7 minutes' : '7 days'}.`);
-setInterval(async () => {
+// --- Vercel Cron Endpoint ---
+// Vercel serverless functions are stateless and cannot run setInterval.
+// Instead, Vercel Cron Jobs will hit this endpoint daily.
+app.get('/api/cron/run-all', async (req, res) => {
   try {
-    console.log('⏳ Scheduled VIP Salary check: Triggering runWeeklyVipSalaryPayout...');
+    console.log('⏳ Vercel Cron Triggered...');
+    await runDailyRoiPayout();
     await runWeeklyVipSalaryPayout();
-  } catch (error) {
-    console.error('❌ Scheduled VIP salary payout failed:', error.message);
-  }
-}, vipIntervalMs);
-
-// Scheduled Favor Account condition check
-import { checkFavorWarningsAndExpiring } from './services/favor.service.js';
-const checkFavorIntervalMs = process.env.ROI_TEST_MODE === 'true' ? 15000 : 24 * 60 * 60 * 1000;
-console.log(`⏳ Favor Account condition checker loaded. Runs every ${process.env.ROI_TEST_MODE === 'true' ? '15 seconds' : '24 hours'}.`);
-setInterval(async () => {
-  try {
     await checkFavorWarningsAndExpiring();
+    res.status(200).json({ success: true, message: 'All scheduled jobs executed successfully on Vercel.' });
   } catch (error) {
-    console.error('❌ Scheduled Favor Account check failed:', error.message);
+    console.error('❌ Vercel Cron failed:', error.message);
+    res.status(500).json({ success: false, error: error.message });
   }
-}, checkFavorIntervalMs);
-
-
-const PORT = process.env.PORT || 5000;
-
-app.listen(PORT, () => {
-  console.log(
-    `🚀 SkyRise Future Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`
-  );
 });
+
+// Export app for Vercel serverless deployment
+export default app;
